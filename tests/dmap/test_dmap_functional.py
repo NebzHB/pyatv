@@ -71,7 +71,7 @@ class DMAPFunctionalTest(common_functional_tests.CommonFunctionalTests):
         return self.fake_atv.app
 
     async def get_connected_device(self, hsgid):
-        self.dmap_service = DmapService("dmap_id", hsgid, port=self.server.port)
+        self.dmap_service = DmapService("dmapid", hsgid, port=self.server.port)
         self.airplay_service = AirPlayService(
             "airplay_id", self.server.port, DEVICE_CREDENTIALS
         )
@@ -264,7 +264,9 @@ class DMAPFunctionalTest(common_functional_tests.CommonFunctionalTests):
         await self.playing()
 
         self.assertFeatures(
-            FeatureState.Unavailable, FeatureName.Shuffle, FeatureName.Repeat,
+            FeatureState.Unavailable,
+            FeatureName.Shuffle,
+            FeatureName.Repeat,
         )
 
         self.usecase.example_music(
@@ -273,7 +275,9 @@ class DMAPFunctionalTest(common_functional_tests.CommonFunctionalTests):
         await self.playing(title="music")
 
         self.assertFeatures(
-            FeatureState.Available, FeatureName.Shuffle, FeatureName.Repeat,
+            FeatureState.Available,
+            FeatureName.Shuffle,
+            FeatureName.Repeat,
         )
 
     @unittest_run_loop

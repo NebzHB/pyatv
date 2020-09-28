@@ -1,22 +1,28 @@
 """Minimalistic DNS-SD implementation."""
 import math
+import socket
 import asyncio
 import struct
 import logging
-import socket
+import weakref
 from ipaddress import IPv4Address
 from collections import namedtuple
-from typing import Optional, Dict, List, cast, NamedTuple, Union
+from typing import Optional, Dict, List, cast, NamedTuple, Callable
 
 from zeroconf import Zeroconf, ServiceInfo
 
-from pyatv.support import log_binary
+from pyatv.support import log_binary, net
 
 _LOGGER = logging.getLogger(__name__)
 
+# This module produces a lot of debug output, use a dedicated log level.
+# Maybe move this to top-level support later?
+TRAFFIC_LEVEL = logging.DEBUG - 5
+setattr(logging, "TRAFFIC", TRAFFIC_LEVEL)
+logging.addLevelName(TRAFFIC_LEVEL, "Traffic")
+
 DnsHeader = namedtuple("DnsHeader", "id flags qdcount ancount nscount arcount")
 DnsQuestion = namedtuple("DnsQuestion", "qname qtype qclass")
-DnsAnswer = namedtuple("DnsAnswer", "qname qtype qclass ttl rd_length rd")
 DnsResource = namedtuple("DnsResource", "qname qtype qclass ttl rd_length rd")
 
 
@@ -38,11 +44,11 @@ class Response(NamedTuple):
     model: Optional[str]  # Comes from _device-info._tcp.local
 
 
-QTYPE_A = 0x0001
-QTYPE_PTR = 0x000C
-QTYPE_TXT = 0x0010
-QTYPE_SRV = 0x0021
-QTYPE_ANY = 0x00FF
+QTYPE_A: int = 0x0001
+QTYPE_PTR: int = 0x000C
+QTYPE_TXT: int = 0x0010
+QTYPE_SRV: int = 0x0021
+QTYPE_ANY: int = 0x00FF
 
 DEVICE_INFO_SERVICE = "_device-info._tcp.local"
 
@@ -158,9 +164,10 @@ class DnsMessage:
         """Initialize a new DnsMessage."""
         self.msg_id = msg_id
         self.flags = flags
-        self.questions = []
-        self.answers = []
-        self.resources = []
+        self.questions: List[DnsQuestion] = []
+        self.answers: List[DnsResource] = []
+        self.authorities: List[DnsResource] = []
+        self.resources: List[DnsResource] = []
 
     def unpack(self, msg):
         """Unpack bytes into a DnsMessage."""
@@ -168,9 +175,6 @@ class DnsMessage:
         header = DnsHeader._make(data)
         self.msg_id = header.id
         self.flags = header.flags
-
-        if header.nscount > 0:
-            raise NotImplementedError("nscount > 0")
 
         # Unpack questions
         for _ in range(header.qdcount):
@@ -180,7 +184,12 @@ class DnsMessage:
         # Unpack answers
         for _ in range(header.ancount):
             ptr, data = unpack_rr(ptr, msg)
-            self.answers.append(DnsAnswer(*data))
+            self.answers.append(DnsResource(*data))
+
+        # Unpack authorities
+        for _ in range(header.nscount):
+            ptr, data = unpack_rr(ptr, msg)
+            self.authorities.append(DnsResource(*data))
 
         # Unpack additional resources
         for _ in range(header.arcount):
@@ -196,7 +205,7 @@ class DnsMessage:
             self.flags,
             len(self.questions),
             len(self.answers),
-            0,
+            len(self.authorities),
             len(self.resources),
         )
 
@@ -216,13 +225,14 @@ class DnsMessage:
             buf += struct.pack(">H", len(data))
             buf += data
 
-        for resource in self.resources:
-            buf += qname_encode(resource.qname)
-            buf += struct.pack(">H", resource.qtype)
-            buf += struct.pack(">H", resource.qclass)
-            buf += struct.pack(">I", resource.ttl)
-            buf += struct.pack(">H", len(resource.rd))
-            buf += resource.rd
+        for section in [self.authorities, self.resources]:
+            for resource in section:
+                buf += qname_encode(resource.qname)
+                buf += struct.pack(">H", resource.qtype)
+                buf += struct.pack(">H", resource.qclass)
+                buf += struct.pack(">I", resource.ttl)
+                buf += struct.pack(">H", len(resource.rd))
+                buf += resource.rd
 
         return buf
 
@@ -230,16 +240,21 @@ class DnsMessage:
         """Return string representation of DnsMessage."""
         return (
             "MsgId=0x{0:04X}\nFlags=0x{1:04X}\nQuestions={2}\n"
-            "Answers={3}\nResources={4}".format(
-                self.msg_id, self.flags, self.questions, self.answers, self.resources
+            "Answers={3}\nAuthorities={4}\nResources={5}".format(
+                self.msg_id,
+                self.flags,
+                self.questions,
+                self.answers,
+                self.authorities,
+                self.resources,
             )
         )
 
 
-def create_request(services: List[str]) -> bytes:
+def create_request(services: List[str], qtype: int = QTYPE_PTR) -> bytes:
     """Create a new DnsMessage requesting specified services."""
     msg = DnsMessage(0x35FF)
-    msg.questions += [DnsQuestion(s, QTYPE_ANY, 0x8001) for s in services]
+    msg.questions += [DnsQuestion(s, qtype, 0x8001) for s in services]
     return msg.pack()
 
 
@@ -252,7 +267,7 @@ def _get_model(services: List[Service]) -> Optional[str]:
 
 def parse_services(message: DnsMessage) -> List[Service]:
     """Parse DNS response into Service objects."""
-    table: Dict[str, Dict[int, Union[DnsAnswer, DnsResource]]] = {}
+    table: Dict[str, Dict[int, DnsResource]] = {}
     ptrs: Dict[str, str] = {}  # qname -> real name
     results: Dict[str, Service] = {}
 
@@ -278,7 +293,11 @@ def parse_services(message: DnsMessage) -> List[Service]:
         address = IPv4Address(target_record.rd) if target_record else None
 
         results[service] = Service(
-            service_type, service_name, address, port, _decode_properties(properties),
+            service_type,
+            service_name,
+            address,
+            port,
+            _decode_properties(properties),
         )
 
     # If there are PTRs to unknown services, create placeholders
@@ -306,13 +325,16 @@ class UnicastDnsSdClientProtocol(asyncio.Protocol):
         """Get respoonse with a maximum timeout."""
         try:
             await asyncio.wait_for(
-                self.semaphore.acquire(), timeout=self.timeout,
+                self.semaphore.acquire(),
+                timeout=self.timeout,
             )
         finally:
             self._finished()
         services = parse_services(self.result)
         return Response(
-            services=services, deep_sleep=False, model=_get_model(services),
+            services=services,
+            deep_sleep=False,
+            model=_get_model(services),
         )
 
     def connection_made(self, transport) -> None:
@@ -323,7 +345,10 @@ class UnicastDnsSdClientProtocol(asyncio.Protocol):
     async def _resend_loop(self):
         for _ in range(math.ceil(self.timeout)):
             log_binary(
-                _LOGGER, "Sending DNS request to " + self.host, Data=self.message
+                _LOGGER,
+                "Sending DNS request to " + self.host,
+                level=TRAFFIC_LEVEL,
+                Data=self.message,
             )
 
             self.transport.sendto(self.message)
@@ -331,7 +356,12 @@ class UnicastDnsSdClientProtocol(asyncio.Protocol):
 
     def datagram_received(self, data: bytes, _) -> None:
         """DNS response packet received."""
-        log_binary(_LOGGER, "Received DNS response from " + self.host, Data=data)
+        log_binary(
+            _LOGGER,
+            "Received DNS response from " + self.host,
+            level=TRAFFIC_LEVEL,
+            Data=data,
+        )
 
         self.result = DnsMessage().unpack(data)
         self._finished()
@@ -354,82 +384,160 @@ class UnicastDnsSdClientProtocol(asyncio.Protocol):
             self._task.cancel()
 
 
-class MulticastDnsSdClientProtocol(asyncio.Protocol):
+class ReceiveDelegate(asyncio.Protocol):
+    """Delegate incoming data to another object."""
+
+    def __init__(self, delegate) -> None:
+        """Initialize a new ReceiveDelegate."""
+        self.delegate = weakref.ref(delegate)
+
+    def datagram_received(self, data, addr) -> None:
+        """Receive data from remote host."""
+        delegate = self.delegate()
+        if delegate is not None:
+            try:
+                delegate.datagram_received(data, addr)
+            except Exception:  # pylint: disable=no-bare
+                _LOGGER.exception("exception during data handling")
+
+    def error_received(self, exc) -> None:
+        """Error during reception."""
+        delegate = self.delegate()
+        if delegate is not None:
+            try:
+                delegate.error_received(exc)
+            except Exception:  # pylint: disable=no-bare
+                _LOGGER.exception("connection error")
+
+
+class MulticastDnsSdClientProtocol:
     """Protocol to make multicast requests."""
 
     def __init__(
-        self, services: List[str], address: str, port: int, timeout: int
+        self,
+        loop: asyncio.AbstractEventLoop,
+        services: List[str],
+        address: str,
+        port: int,
+        end_condition: Optional[Callable[[Response], bool]],
     ) -> None:
         """Initialize a new MulticastDnsSdClientProtocol."""
+        self.loop = loop
+        self.services = services
         self.message = create_request(services)
         self.address = address
         self.port = port
-        self.timeout = timeout
+        self.end_condition = end_condition or (lambda _: False)
         self.semaphore: asyncio.Semaphore = asyncio.Semaphore(value=0)
-        self.transport = None
         self.responses: Dict[IPv4Address, Response] = {}
         self._unicasts: Dict[IPv4Address, bytes] = {}
         self._task: Optional[asyncio.Future] = None
+        self._transports: List[asyncio.BaseTransport] = []
 
-    async def get_response(self) -> Dict[IPv4Address, Response]:
+    async def add_socket(self, sock: socket.socket):
+        """Add a new multicast socket."""
+        _LOGGER.debug("Adding socket %s", sock)
+
+        transport, _ = await self.loop.create_datagram_endpoint(
+            lambda: ReceiveDelegate(self),
+            sock=sock,
+        )
+
+        self._transports.append(transport)
+
+    async def get_response(self, timeout: int) -> Dict[IPv4Address, Response]:
         """Get respoonse with a maximum timeout."""
         # Semaphore used here as a quick-bailout when testing
         try:
-            await asyncio.wait_for(self.semaphore.acquire(), timeout=self.timeout)
+            self._task = asyncio.ensure_future(self._resend_loop(timeout))
+            await asyncio.wait_for(self.semaphore.acquire(), timeout=timeout)
         except asyncio.TimeoutError:
             pass
         finally:
-            if self._task:
-                self._task.cancel()
+            self.close()
 
         return self.responses
 
-    def connection_made(self, transport) -> None:
-        """Establish connection to host."""
-        self.transport = transport
-        self._task = asyncio.ensure_future(self._resend_loop())
-
-    async def _resend_loop(self):
-        for _ in range(math.ceil(self.timeout)):
+    async def _resend_loop(self, timeout):
+        for _ in range(math.ceil(timeout)):
             log_binary(
                 _LOGGER,
                 f"Sending multicast DNS request to {self.address}:{self.port}",
+                level=TRAFFIC_LEVEL,
                 Data=self.message,
             )
 
-            self.transport.sendto(self.message, (self.address, self.port))
+            self._sendto(self.message, (self.address, self.port))
 
             # Send unicast requests if devices are sleeping
             for address, message in self._unicasts.items():
                 log_binary(
                     _LOGGER,
                     f"Sending unicast DNS request to {address}:{self.port}",
+                    level=TRAFFIC_LEVEL,
                     Data=message,
                 )
-                self.transport.sendto(message, (address, self.port))
+                self._sendto(message, (address, self.port))
 
             await asyncio.sleep(1)
 
+    def _sendto(self, message, target):
+        for transport in self._transports:
+            try:
+                transport.sendto(message, target)
+            except Exception:  # pylint: disable=bare-except
+                _LOGGER.exception(
+                    "fail to send to " + str(transport.get_extra_info("socket"))
+                )
+
     def datagram_received(self, data, addr) -> None:
         """DNS response packet received."""
-        log_binary(_LOGGER, "Received DNS response from " + str(addr[0]), Data=data)
+        log_binary(
+            _LOGGER,
+            f"Received DNS response from {addr}",
+            level=TRAFFIC_LEVEL,
+            Data=data,
+        )
         services = parse_services(DnsMessage().unpack(data))
+
+        # Ignore responses from other services
+        for service in services:
+            if (
+                service.type not in self.services
+                and service.type != DEVICE_INFO_SERVICE
+            ):
+                return
 
         is_sleep_proxy = all(service.port == 0 for service in services)
         if is_sleep_proxy:
             self._unicasts[addr[0]] = create_request(
-                [service.name + "." + service.type for service in services]
+                [service.name + "." + service.type for service in services],
+                qtype=QTYPE_ANY,
             )
         else:
-            self.responses[IPv4Address(addr[0])] = Response(
+            response = Response(
                 services=services,
                 deep_sleep=(addr[0] in self._unicasts),
                 model=_get_model(services),
             )
 
+            if self.end_condition(response):
+                # Matches end condition: replace everything found so far and abort
+                self.responses = {IPv4Address(addr[0]): response}
+                self.semaphore.release()
+                self.close()
+            else:
+                self.responses[IPv4Address(addr[0])] = response
+
     def error_received(self, exc) -> None:
         """Error received during communication."""
         _LOGGER.debug("Error during MDNS lookup: %s", exc)
+
+    def close(self):
+        """Close resources used by this instance."""
+        for transport in self._transports:
+            transport.close()
+
         if self._task:
             self._task.cancel()
             self._task = None
@@ -460,21 +568,24 @@ async def multicast(
     address: str = "224.0.0.251",
     port: int = 5353,
     timeout: int = 4,
+    end_condition: Optional[Callable[[Response], bool]] = None,
 ) -> Dict[IPv4Address, Response]:
     """Send multicast request for services."""
-    # Create and bind socket, otherwise it doesn't work on Windows
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("", 0))
-
-    transport, protocol = await loop.create_datagram_endpoint(
-        lambda: MulticastDnsSdClientProtocol(services, address, port, timeout),
-        sock=sock,
+    protocol = MulticastDnsSdClientProtocol(
+        loop, services, address, port, end_condition
     )
 
-    try:
-        return await cast(MulticastDnsSdClientProtocol, protocol).get_response()
-    finally:
-        transport.close()
+    # Socket listening on 5353 from anywhere
+    await protocol.add_socket(net.mcast_socket(None, 5353))
+
+    # One socket per local IP address
+    for addr in net.get_private_addresses():
+        try:
+            await protocol.add_socket(net.mcast_socket(str(addr)))
+        except Exception:
+            _LOGGER.exception(f"failed to add listener for {addr}")
+
+    return await cast(MulticastDnsSdClientProtocol, protocol).get_response(timeout)
 
 
 async def publish(loop: asyncio.AbstractEventLoop, service: Service, zconf: Zeroconf):
