@@ -30,7 +30,7 @@ setup(
     description="Library for controlling an Apple TV",
     long_description=read("README.md"),
     long_description_content_type="text/markdown",
-    packages=find_packages(exclude=["tests", "tests.*"]),
+    packages=find_packages(exclude=["tests", "tests.*", "examples"]),
     include_package_data=True,
     zip_safe=False,
     platforms="any",
@@ -38,7 +38,7 @@ setup(
     test_suite="tests",
     keywords=["apple", "tv"],
     setup_requires=["pytest-runner"],
-    tests_require=["tox==3.20.1", "pytest==6.1.1", "pytest-xdist==2.1.0"],
+    tests_require=["tox==3.20.1", "pytest==6.1.2", "pytest-xdist==2.1.0"],
     entry_points={
         "console_scripts": [
             "atvremote = pyatv.scripts.atvremote:main",
