@@ -9,8 +9,8 @@ from typing import Dict, Tuple, Optional
 from pyatv import const
 from pyatv.support import log_protobuf
 from pyatv.mrp import chacha20, messages, protobuf, variant
+from pyatv.mrp.protobuf import PlaybackState
 from pyatv.mrp.protobuf import CommandInfo_pb2 as cmd
-from pyatv.mrp.protobuf import SetStateMessage as ssm
 from pyatv.mrp.protobuf import SendCommandResultMessage as scr
 from pyatv.mrp.server_auth import MrpServerAuth
 
@@ -64,6 +64,9 @@ _COCOA_BASE = (datetime(1970, 1, 1) - datetime(2001, 1, 1)).total_seconds()
 APP_NAME = "Test app"
 DEVICE_NAME = "Fake MRP ATV"
 PLAYER_IDENTIFIER = "com.github.postlund.pyatv"
+
+DEFAULT_PLAYER_ID = "MediaRemote-DefaultPlayer"
+DEFAULT_PLAYER_NAME = "Default Player"
 
 
 def _fill_item(item, metadata):
@@ -135,6 +138,10 @@ def _set_state_message(metadata, identifier):
     client.bundleIdentifier = identifier
     if metadata.app_name:
         client.displayName = metadata.app_name
+
+    player = inner.playerPath.player
+    player.identifier = DEFAULT_PLAYER_ID
+    player.displayName = DEFAULT_PLAYER_NAME
     return set_state
 
 
@@ -174,6 +181,7 @@ class FakeMrpState:
         self.active_player = None
         self.powered_on = True
         self.has_authenticated = False
+        self.heartbeat_count = 0
 
     def _send(self, msg):
         for client in self.clients:
@@ -216,6 +224,10 @@ class FakeMrpState:
         client.processIdentifier = 123
         client.bundleIdentifier = identifier
 
+        player = inner.playerPath.player
+        player.identifier = DEFAULT_PLAYER_ID
+        player.displayName = DEFAULT_PLAYER_NAME
+
         state = self.get_player_state(identifier)
         for var, value in vars(metadata).items():
             if value:
@@ -234,6 +246,16 @@ class FakeMrpState:
     def volume_control(self, available):
         msg = messages.create(protobuf.VOLUME_CONTROL_AVAILABILITY_MESSAGE)
         msg.inner().volumeControlAvailable = available
+        self._send(msg)
+
+    def default_supported_commands(self, commands):
+        msg = messages.create(protobuf.SET_DEFAULT_SUPPORTED_COMMANDS_MESSAGE)
+        supported_commands = msg.inner().supportedCommands.supportedCommands
+        for command in commands:
+            item = supported_commands.add()
+            item.command = command
+            item.enabled = True
+        msg.inner().playerPath.client.bundleIdentifier = PLAYER_IDENTIFIER
         self._send(msg)
 
 
@@ -433,6 +455,12 @@ class FakeMrpService(MrpServerAuth, asyncio.Protocol):
             state.position -= int(inner.options.skipInterval)
             self.state.update_state(self.state.active_player)
             _LOGGER.debug("Skip backwards %d", inner.options.skipInterval)
+        elif inner.command == cmd.Unknown:
+            # This special case is used by pyatv for heartbeats
+            self.state.heartbeat_count += 1
+            _LOGGER.debug(
+                "Received heartbeat (total count: %d)", self.state.heartbeat_count
+            )
         else:
             _LOGGER.warning("Unhandled button press: %s", message.inner().command)
             self.send(
@@ -537,16 +565,17 @@ class FakeMrpUseCases:
         **kwargs
     ):
         """Call to change what is currently plaing to video."""
-        metadata = PlayingState(
-            playback_state=ssm.Paused if paused else ssm.Playing,
-            title=title,
-            total_time=total_time,
-            position=position,
-            media_type=protobuf.ContentItemMetadata.Video,
-            app_name=app_name,
-            **kwargs,
-        )
-        self.state.set_player_state(player, metadata)
+        fields = {
+            "playback_state": PlaybackState.Paused if paused else PlaybackState.Playing,
+            "playback_rate": 0.0 if paused else 1.0,
+            "title": title,
+            "total_time": total_time,
+            "position": position,
+            "media_type": protobuf.ContentItemMetadata.Video,
+            "app_name": app_name,
+        }
+        fields.update(kwargs)
+        self.state.set_player_state(player, PlayingState(**fields))
         self.state.set_active_player(player)
 
     def example_music(self, **kwargs):
@@ -564,22 +593,27 @@ class FakeMrpUseCases:
         self, paused, artist, album, title, genre, total_time, position, **kwargs
     ):
         """Call to change what is currently plaing to music."""
-        metadata = PlayingState(
-            playback_state=ssm.Paused if paused else ssm.Playing,
-            artist=artist,
-            album=album,
-            title=title,
-            genre=genre,
-            total_time=total_time,
-            position=position,
-            media_type=protobuf.ContentItemMetadata.Music,
-            **kwargs,
-        )
-        self.state.set_player_state(PLAYER_IDENTIFIER, metadata)
+        fields = {
+            "playback_state": PlaybackState.Paused if paused else PlaybackState.Playing,
+            "playback_rate": 0.0 if paused else 1.0,
+            "artist": artist,
+            "album": album,
+            "title": title,
+            "genre": genre,
+            "total_time": total_time,
+            "position": position,
+            "media_type": protobuf.ContentItemMetadata.Music,
+        }
+        fields.update(kwargs)
+        self.state.set_player_state(PLAYER_IDENTIFIER, PlayingState(**fields))
         self.state.set_active_player(PLAYER_IDENTIFIER)
 
     def media_is_loading(self):
         """Call to put device in a loading state."""
-        metadata = PlayingState(playback_state=ssm.Interrupted)
+        metadata = PlayingState(playback_state=PlaybackState.Interrupted)
         self.state.set_player_state(PLAYER_IDENTIFIER, metadata)
         self.state.set_active_player(PLAYER_IDENTIFIER)
+
+    def default_supported_commands(self, commands):
+        """Call to set default supported commands."""
+        self.state.default_supported_commands(commands)

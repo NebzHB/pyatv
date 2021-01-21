@@ -25,7 +25,7 @@ from pyatv.mrp.srp import SRPAuthHandler
 from pyatv.mrp.connection import MrpConnection
 from pyatv.mrp.protocol import MrpProtocol
 from pyatv.mrp.protobuf import CommandInfo_pb2
-from pyatv.mrp.protobuf.SetStateMessage_pb2 import SetStateMessage as ssm
+from pyatv.mrp.protobuf import PlaybackState
 from pyatv.mrp.player_state import PlayerStateManager
 from pyatv.interface import (
     AppleTV,
@@ -109,6 +109,8 @@ _FIELD_FEATURES = {
     FeatureName.TotalTime: "duration",
     FeatureName.Position: "elapsedTimeTimestamp",
 }  # type: Dict[FeatureName, str]
+
+DELAY_BETWEEN_COMMANDS = 0.1
 
 
 def _cocoa_to_timestamp(time):
@@ -202,9 +204,9 @@ class MrpRemoteControl(RemoteControl):
             await self._send_command(CommandInfo_pb2.TogglePlayPause)
         else:
             state = self.psm.playing.playback_state
-            if state == ssm.Playing:
+            if state == PlaybackState.Playing:
                 await self.pause()
-            elif state == ssm.Paused:
+            elif state == PlaybackState.Paused:
                 await self.play()
 
     async def pause(self) -> None:
@@ -325,11 +327,11 @@ class MrpPlaying(Playing):
         """Device state, e.g. playing or paused."""
         return {
             None: DeviceState.Idle,
-            ssm.Playing: DeviceState.Playing,
-            ssm.Paused: DeviceState.Paused,
-            ssm.Stopped: DeviceState.Stopped,
-            ssm.Interrupted: DeviceState.Loading,
-            ssm.Seeking: DeviceState.Seeking,
+            PlaybackState.Playing: DeviceState.Playing,
+            PlaybackState.Paused: DeviceState.Paused,
+            PlaybackState.Stopped: DeviceState.Stopped,
+            PlaybackState.Interrupted: DeviceState.Loading,
+            PlaybackState.Seeking: DeviceState.Seeking,
         }.get(self._state.playback_state, DeviceState.Paused)
 
     @property
@@ -480,11 +482,9 @@ class MrpMetadata(Metadata):
     @property
     def app(self) -> Optional[App]:
         """Return information about running app."""
-        player_path = self.psm.playing.player_path
-        if player_path and player_path.client:
-            return App(
-                player_path.client.displayName, player_path.client.bundleIdentifier
-            )
+        client = self.psm.client
+        if client:
+            return App(client.display_name, client.bundle_identifier)
         return None
 
 
@@ -529,6 +529,7 @@ class MrpPower(Power):
     async def turn_off(self, await_new_state: bool = False) -> None:
         """Turn device off."""
         await self.remote.home(InputAction.Hold)
+        await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
         await self.remote.select()
 
         if await_new_state and self.power_state != PowerState.Off:
@@ -562,8 +563,7 @@ class MrpPushUpdater(PushUpdater):
 
     def __init__(self, loop, metadata, psm):
         """Initialize a new MrpPushUpdater instance."""
-        super().__init__()
-        self.loop = loop
+        super().__init__(loop)
         self.metadata = metadata
         self.psm = psm
 
@@ -583,6 +583,7 @@ class MrpPushUpdater(PushUpdater):
             return
 
         self.psm.listener = self
+        asyncio.ensure_future(self.state_updated(), loop=self.loop)
 
     def stop(self):
         """No longer forward updates to listener."""
@@ -592,7 +593,7 @@ class MrpPushUpdater(PushUpdater):
         """State was updated for active player."""
         try:
             playstatus = await self.metadata.playing()
-            self.loop.call_soon(self.listener.playstatus_update, self, playstatus)
+            self.post_update(playstatus)
         except Exception as ex:  # pylint: disable=broad-except
             _LOGGER.debug("Playstatus error occurred: %s", ex)
             self.loop.call_soon(self.listener.playstatus_error, self, ex)
@@ -632,11 +633,11 @@ class MrpFeatures(Features):
         # into consideration here.
         if feature == FeatureName.PlayPause:
             playback_state = self.psm.playing.playback_state
-            if playback_state == ssm.Playing and self.in_state(
+            if playback_state == PlaybackState.Playing and self.in_state(
                 FeatureState.Available, FeatureName.Pause
             ):
                 return FeatureInfo(state=FeatureState.Available)
-            if playback_state == ssm.Paused and self.in_state(
+            if playback_state == PlaybackState.Paused and self.in_state(
                 FeatureState.Available, FeatureName.Play
             ):
                 return FeatureInfo(state=FeatureState.Available)
@@ -649,8 +650,7 @@ class MrpFeatures(Features):
             return FeatureInfo(state=FeatureState.Unavailable)
 
         if feature == FeatureName.App:
-            player_path = self.psm.playing.player_path
-            if player_path and player_path.client:
+            if self.psm.client:
                 return FeatureInfo(state=FeatureState.Available)
             return FeatureInfo(state=FeatureState.Unavailable)
 
@@ -687,7 +687,7 @@ class MrpAppleTV(AppleTV):
         )
         self._srp = SRPAuthHandler()
         self._protocol = MrpProtocol(self._connection, self._srp, self._mrp_service)
-        self._psm = PlayerStateManager(self._protocol, loop)
+        self._psm = PlayerStateManager(self._protocol)
 
         self._mrp_remote = MrpRemoteControl(loop, self._psm, self._protocol)
         self._mrp_metadata = MrpMetadata(self._protocol, self._psm, config.identifier)

@@ -1,5 +1,6 @@
 """Functional tests using the API with a fake Apple TV."""
 
+import math
 import logging
 from ipaddress import IPv4Address
 from aiohttp.test_utils import unittest_run_loop
@@ -19,7 +20,7 @@ from pyatv.conf import AirPlayService, MrpService, AppleTV
 from pyatv.mrp.protobuf import CommandInfo_pb2
 
 from tests import common_functional_tests
-from tests.utils import until, faketime
+from tests.utils import until, faketime, stub_sleep
 from tests.fake_device import FakeAppleTV
 from tests.fake_device.mrp import APP_NAME, PLAYER_IDENTIFIER
 from tests.fake_device.airplay import DEVICE_CREDENTIALS
@@ -215,7 +216,7 @@ class MRPFunctionalTest(common_functional_tests.CommonFunctionalTests):
 
     @unittest_run_loop
     async def test_metadata_playback_rate_device_state(self):
-        self.usecase.example_video()
+        self.usecase.example_video(paused=False, playback_rate=0.0)
 
         playing = await self.playing(title="dummy")
         self.assertEqual(playing.device_state, DeviceState.Paused)
@@ -247,6 +248,7 @@ class MRPFunctionalTest(common_functional_tests.CommonFunctionalTests):
 
         # Check if power state changes after turn_off command
         await self.atv.power.turn_off()
+        assert math.isclose(stub_sleep(), 0.1)
         await until(lambda: self.atv.power.power_state == PowerState.Off)
         await until(lambda: listener.old_state == PowerState.On)
         await until(lambda: listener.new_state == PowerState.Off)
@@ -416,13 +418,6 @@ class MRPFunctionalTest(common_functional_tests.CommonFunctionalTests):
         await until(lambda: self.state.last_button_pressed == "play")
 
     @unittest_run_loop
-    async def test_incorrect_playback_rate_set(self):
-        self.usecase.example_video(playback_rate=0.0, paused=False)
-
-        playing = await self.playing(title="dummy")
-        assert playing.device_state == DeviceState.Playing
-
-    @unittest_run_loop
     async def test_update_client_before_setstate(self):
         self.usecase.update_client(APP_NAME, TEST_PLAYER)
         self.usecase.example_video(title="test", player=TEST_PLAYER, app_name=None)
@@ -430,3 +425,13 @@ class MRPFunctionalTest(common_functional_tests.CommonFunctionalTests):
         await self.playing(title="test")
         self.assertEqual(self.atv.metadata.app.name, APP_NAME)
         self.assertEqual(self.atv.metadata.app.identifier, TEST_PLAYER)
+
+    @unittest_run_loop
+    async def test_set_default_commands(self):
+        self.usecase.default_supported_commands(
+            [CommandInfo_pb2.Play, CommandInfo_pb2.Pause]
+        )
+        self.usecase.example_video()
+
+        await self.playing(title="dummy")
+        self.assertFeatures(FeatureState.Available, FeatureName.Play, FeatureName.Pause)
