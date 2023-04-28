@@ -93,6 +93,7 @@ class GlobalCommands:
         _print_commands("Device Info", interface.DeviceInfo)
         _print_commands("Device", DeviceCommands)
         _print_commands("Apps", interface.Apps)
+        _print_commands("User Accounts", interface.UserAccounts)
         _print_commands("Global", self.__class__)
 
         return 0
@@ -156,7 +157,9 @@ class GlobalCommands:
         if not conf:
             return 2
 
-        options = {}
+        options = {
+            "name": self.args.remote_name,
+        }
 
         # Inject user provided credentials
         for proto in Protocol:
@@ -169,7 +172,6 @@ class GlobalCommands:
             options.update(
                 {
                     "pairing_guid": self.args.pairing_guid,
-                    "remote_name": self.args.remote_name,
                 }
             )
 
@@ -619,7 +621,7 @@ async def _handle_commands(args, config, loop):
     return 0
 
 
-# pylint: disable=too-many-return-statements
+# pylint: disable=too-many-return-statements disable=too-many-locals
 async def _handle_device_command(args, cmd, atv, loop):
     device = retrieve_commands(DeviceCommands)
     ctrl = retrieve_commands(interface.RemoteControl)
@@ -629,6 +631,7 @@ async def _handle_device_command(args, cmd, atv, loop):
     stream = retrieve_commands(interface.Stream)
     device_info = retrieve_commands(interface.DeviceInfo)
     apps = retrieve_commands(interface.Apps)
+    user_accounts = retrieve_commands(interface.UserAccounts)
     audio = retrieve_commands(interface.Audio)
 
     # Parse input command and argument from user
@@ -664,6 +667,9 @@ async def _handle_device_command(args, cmd, atv, loop):
 
     if cmd in apps:
         return await _exec_command(atv.apps, cmd, True, *cmd_args)
+
+    if cmd in user_accounts:
+        return await _exec_command(atv.user_accounts, cmd, True, *cmd_args)
 
     _LOGGER.error("Unknown command: %s", cmd)
     return 1
@@ -710,8 +716,7 @@ def _pretty_print(data):
 
 async def appstart(loop):
     """Start the asyncio event loop and runs the application."""
-    # Helper method so that the coroutine exits cleanly if an exception
-    # happens (which would leave resources dangling)
+
     async def _run_application(loop):
         try:
             return await cli_handler(loop)

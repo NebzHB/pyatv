@@ -50,7 +50,7 @@ __pdoc__ = {
     "DeviceInfo.RAW_MODEL": False,
 }
 
-_ALL_FEATURES = {}  # type: Dict[int, Tuple[str, str]]
+_ALL_FEATURES: Dict[int, Tuple[str, str]] = {}
 
 ReturnType = TypeVar(  # pylint: disable=invalid-name
     "ReturnType", bound=Callable[..., Any]
@@ -85,7 +85,7 @@ def feature(index: int, name: str, doc: str) -> Callable[[ReturnType], ReturnTyp
             setattr(func, "_feature_name", name)
             return func
 
-        raise Exception(
+        raise RuntimeError(
             f"Index {index} collides between {name} and {_ALL_FEATURES[index]}"
         )
 
@@ -109,7 +109,7 @@ def _get_first_sentence_in_pydoc(obj):
 
 def retrieve_commands(obj: object):
     """Retrieve all commands and help texts from an API object."""
-    commands = {}  # type: Dict[str, str]
+    commands: Dict[str, str] = {}
     for func in obj.__dict__:
         if not inspect.isfunction(obj.__dict__[func]) and not isinstance(
             obj.__dict__[func], property
@@ -682,6 +682,49 @@ class Apps:
         raise exceptions.NotSupportedError()
 
 
+class UserAccount:
+    """Information about a user account."""
+
+    def __init__(self, name: str, identifier: str) -> None:
+        """Initialize a new UserAccount instance."""
+        self._name = name
+        self._identifier = identifier
+
+    @property
+    def name(self) -> Optional[str]:
+        """User name."""
+        return self._name
+
+    @property
+    def identifier(self) -> str:
+        """Return a unique id for the account."""
+        return self._identifier
+
+    def __str__(self) -> str:
+        """Convert account info to readable string."""
+        return f"Account: {self.name} ({self.identifier})"
+
+    def __eq__(self, other) -> bool:
+        """Return self==other."""
+        if isinstance(other, UserAccount):
+            return self.name == other.name and self.identifier == other.identifier
+        return False
+
+
+class UserAccounts:
+    """Base class for account handling."""
+
+    @feature(55, "AccountList", "List of user accounts.")
+    async def account_list(self) -> List[UserAccount]:
+        """Fetch a list of user accounts that can be switched."""
+        raise exceptions.NotSupportedError()
+
+    @feature(56, "SwitchAccount", "Switch user account.")
+    async def switch_account(self, account_id: str) -> None:
+        """Switch user account by account ID."""
+        raise exceptions.NotSupportedError()
+
+
 class Metadata:
     """Base class for retrieving metadata from an Apple TV."""
 
@@ -1232,6 +1275,11 @@ class AppleTV(ABC, StateProducer[DeviceListener]):
     @abstractmethod
     def apps(self) -> Apps:
         """Return apps interface."""
+
+    @property
+    @abstractmethod
+    def user_accounts(self) -> UserAccounts:
+        """Return user accounts interface."""
 
     @property
     @abstractmethod
