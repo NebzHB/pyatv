@@ -384,12 +384,18 @@ class FacadeStream(Relayer, interface.Stream):  # pylint: disable=too-few-public
         await self.relay("play_url")(url, **kwargs)
 
     @shield.guard
-    async def stream_file(self, file: Union[str, io.BufferedReader], **kwargs) -> None:
+    async def stream_file(
+        self,
+        file: Union[str, io.BufferedReader, asyncio.streams.StreamReader],
+        /,
+        metadata: Optional[interface.MediaMetadata] = None,
+        **kwargs
+    ) -> None:
         """Stream local file to device.
 
         INCUBATING METHOD - MIGHT CHANGE IN THE FUTURE!
         """
-        await self.relay("stream_file")(file, **kwargs)
+        await self.relay("stream_file")(file, metadata=metadata, **kwargs)
 
 
 class FacadeApps(Relayer, interface.Apps):
@@ -431,9 +437,24 @@ class FacadeUserAccounts(Relayer, interface.UserAccounts):
 class FacadeAudio(Relayer, interface.Audio):
     """Facade implementation for audio functionality."""
 
-    def __init__(self):
+    def __init__(self, core_dispatcher: CoreStateDispatcher):
         """Initialize a new FacadeAudio instance."""
-        super().__init__(interface.Audio, DEFAULT_PRIORITIES)
+        Relayer.__init__(self, interface.Audio, DEFAULT_PRIORITIES)
+        interface.Audio.__init__(self)
+        self._volume = 0.0
+        core_dispatcher.listen_to(UpdatedState.Volume, self._volume_changed)
+
+    def _volume_changed(self, message: StateMessage) -> None:
+        """State of something changed."""
+        volume = cast(float, message.value)
+
+        # Compute new state so we can know if we should update or not
+        old_level = self._volume
+        new_level = self._volume = volume
+
+        # Do not update state in case it didn't change
+        if new_level != old_level:
+            self.listener.volume_update(old_level, new_level)
 
     @shield.guard
     async def volume_up(self) -> None:
@@ -461,6 +482,34 @@ class FacadeAudio(Relayer, interface.Audio):
             await self.relay("set_volume")(level)
         else:
             raise exceptions.ProtocolError(f"volume {level} is out of range")
+
+
+class FacadeKeyboard(Relayer, interface.Keyboard):
+    """Facade implementation for keyboard handling."""
+
+    def __init__(self):
+        """Initialize a new FacadeKeyboard instance."""
+        super().__init__(interface.Keyboard, DEFAULT_PRIORITIES)
+
+    @shield.guard
+    async def text_get(self) -> Optional[str]:
+        """Get current virtual keyboard text."""
+        return await self.relay("text_get")()
+
+    @shield.guard
+    async def text_clear(self) -> None:
+        """Clear virtual keyboard text."""
+        return await self.relay("text_clear")()
+
+    @shield.guard
+    async def text_append(self, text: str) -> None:
+        """Input text into virtual keyboard."""
+        return await self.relay("text_append")(text=text)
+
+    @shield.guard
+    async def text_set(self, text: str) -> None:
+        """Replace text in virtual keyboard."""
+        return await self.relay("text_set")(text=text)
 
 
 class FacadePushUpdater(
@@ -541,7 +590,8 @@ class FacadeAppleTV(interface.AppleTV):
             interface.Stream: FacadeStream(self._features),
             interface.Apps: FacadeApps(),
             interface.UserAccounts: FacadeUserAccounts(),
-            interface.Audio: FacadeAudio(),
+            interface.Audio: FacadeAudio(core_dispatcher),
+            interface.Keyboard: FacadeKeyboard(),
         }
         self._shield_everything()
 
@@ -729,6 +779,12 @@ class FacadeAppleTV(interface.AppleTV):
     def audio(self) -> interface.Audio:
         """Return audio interface."""
         return cast(interface.Audio, self._interfaces[interface.Audio])
+
+    @property  # type: ignore
+    @shield.guard
+    def keyboard(self) -> interface.Keyboard:
+        """Return keyboard interface."""
+        return cast(interface.Keyboard, self._interfaces[interface.Keyboard])
 
     def state_was_updated(self) -> None:
         """Call when state was updated.

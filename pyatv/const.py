@@ -4,8 +4,8 @@
 from enum import Enum
 
 MAJOR_VERSION = "0"
-MINOR_VERSION = "10"
-PATCH_VERSION = "3"
+MINOR_VERSION = "12"
+PATCH_VERSION = "0"
 __short_version__ = f"{MAJOR_VERSION}.{MINOR_VERSION}"
 __version__ = f"{__short_version__}.{PATCH_VERSION}"
 
@@ -381,3 +381,15 @@ class FeatureName(Enum):
 
     SetVolume = 46
     """Set volume level."""
+
+    TextGet = 51
+    """Get current virtual keyboard text."""
+
+    TextClear = 52
+    """Clear virtual keyboard text."""
+
+    TextAppend = 53
+    """Input text into virtual keyboard."""
+
+    TextSet = 54
+    """Replace text in virtual keyboard."""

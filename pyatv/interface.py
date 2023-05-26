@@ -6,6 +6,7 @@ all its features.
 
 from abc import ABC, abstractmethod
 import asyncio
+from dataclasses import dataclass
 import hashlib
 import inspect
 import io
@@ -64,6 +65,16 @@ class ArtworkInfo(NamedTuple):
     mimetype: str
     width: int
     height: int
+
+
+@dataclass
+class MediaMetadata:
+    """Container for media (e.g. audio or video) metadata."""
+
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    duration: Optional[float] = None
 
 
 class FeatureInfo(NamedTuple):
@@ -823,7 +834,13 @@ class Stream:  # pylint: disable=too-few-public-methods
         raise exceptions.NotSupportedError()
 
     @feature(44, "StreamFile", "Stream local file to device.")
-    async def stream_file(self, file: Union[str, io.BufferedReader], **kwargs) -> None:
+    async def stream_file(
+        self,
+        file: Union[str, io.BufferedReader, asyncio.streams.StreamReader],
+        /,
+        metadata: Optional[MediaMetadata] = None,
+        **kwargs
+    ) -> None:
         """Stream local or remote file to device.
 
         Supports either local file paths or a HTTP(s) address.
@@ -1036,10 +1053,22 @@ class Features:
         return True
 
 
-class Audio:
+class AudioListener(ABC):  # pylint: disable=too-few-public-methods
+    """Listener interface for audio updates."""
+
+    @abstractmethod
+    def volume_update(self, old_level: float, new_level: float):
+        """Device volume was updated."""
+        raise NotImplementedError()
+
+
+class Audio(ABC, StateProducer):
     """Base class for audio functionality.
 
     Volume level is managed in percent where 0 is muted and 100 is max volume.
+
+
+    Listener interface: `pyatv.interfaces.AudioListener`
     """
 
     @property  # type: ignore
@@ -1081,6 +1110,30 @@ class Audio:
         Call will block until volume change has been acknowledged by the device (when
         possible and supported).
         """
+        raise exceptions.NotSupportedError()
+
+
+class Keyboard:
+    """Base class for keyboard handling."""
+
+    @feature(51, "TextGet", "Get current virtual keyboard text.")
+    async def text_get(self) -> Optional[str]:
+        """Get current virtual keyboard text."""
+        raise exceptions.NotSupportedError()
+
+    @feature(52, "TextClear", "Clear virtual keyboard text.")
+    async def text_clear(self) -> None:
+        """Clear virtual keyboard text."""
+        raise exceptions.NotSupportedError()
+
+    @feature(53, "TextAppend", "Input text into virtual keyboard.")
+    async def text_append(self, text: str) -> None:
+        """Input text into virtual keyboard."""
+        raise exceptions.NotSupportedError()
+
+    @feature(54, "TextSet", "Replace text in virtual keyboard.")
+    async def text_set(self, text: str) -> None:
+        """Replace text in virtual keyboard."""
         raise exceptions.NotSupportedError()
 
 
@@ -1152,7 +1205,13 @@ class BaseConfig(ABC):
     @property
     def identifier(self) -> Optional[str]:
         """Return the main identifier associated with this device."""
-        for prot in [Protocol.MRP, Protocol.DMAP, Protocol.AirPlay, Protocol.RAOP]:
+        for prot in [
+            Protocol.MRP,
+            Protocol.DMAP,
+            Protocol.AirPlay,
+            Protocol.RAOP,
+            Protocol.Companion,
+        ]:
             service = self.get_service(prot)
             if service and service.identifier is not None:
                 return service.identifier
@@ -1285,3 +1344,8 @@ class AppleTV(ABC, StateProducer[DeviceListener]):
     @abstractmethod
     def audio(self) -> Audio:
         """Return audio interface."""
+
+    @property
+    @abstractmethod
+    def keyboard(self) -> Keyboard:
+        """Return keyboard interface."""
