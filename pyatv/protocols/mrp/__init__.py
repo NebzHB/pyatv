@@ -1,12 +1,12 @@
 """Implementation of the MediaRemoteTV Protocol used by ATV4 and later."""
 
 import asyncio
+from contextlib import suppress
 import datetime
 import logging
 import math
 import re
-from typing import Any, Dict, Generator, List, Mapping, Optional, Set, Tuple
-from urllib.parse import urlparse
+from typing import Any, Dict, Generator, List, Mapping, Optional, Set, Tuple, cast
 
 from aiohttp import ClientError, ClientSession
 
@@ -50,6 +50,7 @@ from pyatv.interface import (
     FeatureInfo,
     Features,
     Metadata,
+    OutputDevice,
     PairingHandler,
     Playing,
     Power,
@@ -67,6 +68,7 @@ from pyatv.protocols.mrp.protocol import MrpProtocol
 from pyatv.support.cache import Cache
 from pyatv.support.device_info import lookup_model, lookup_version
 from pyatv.support.http import ClientSessionManager
+from pyatv.support.url import is_url
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,6 +107,10 @@ _FEATURES_SUPPORTED: List[FeatureName] = [
     FeatureName.TurnOn,
     FeatureName.TurnOff,
     FeatureName.PowerState,
+    FeatureName.OutputDevices,
+    FeatureName.AddOutputDevices,
+    FeatureName.RemoveOutputDevices,
+    FeatureName.SetOutputDevices,
 ]
 
 _FEATURE_COMMAND_MAP = {
@@ -209,7 +215,10 @@ def build_playing_instance(  # pylint: disable=too-many-locals
             datetime.datetime.now() - _cocoa_to_timestamp(elapsed_timestamp)
         ).total_seconds()
 
-        if device_state() == DeviceState.Playing:
+        playback_rate = state.metadata_field("playbackRate") or 0.0
+        if device_state() == DeviceState.Playing and not math.isclose(
+            playback_rate, 0.0
+        ):
             return int(elapsed_time + diff)
         return int(elapsed_time)
 
@@ -462,7 +471,13 @@ class MrpRemoteControl(RemoteControl):
 class MrpMetadata(Metadata):
     """Implementation of API for retrieving metadata."""
 
-    def __init__(self, protocol, psm, identifier, client_session: ClientSession):
+    def __init__(
+        self,
+        protocol: MrpProtocol,
+        psm: PlayerStateManager,
+        identifier: Optional[str],
+        client_session: ClientSession,
+    ):
         """Initialize a new MrpPlaying."""
         self.protocol = protocol
         self.psm = psm
@@ -531,8 +546,7 @@ class MrpMetadata(Metadata):
                 )
             except KeyError:
                 url = None
-            url_parts = urlparse(url)
-            if url_parts.scheme and url_parts.netloc:
+            if is_url(url):
                 urls.append(url)
 
         if metadata.HasField("artworkURL"):
@@ -726,21 +740,36 @@ class MrpAudio(Audio):
         self.protocol: MrpProtocol = protocol
         self.state_dispatcher = state_dispatcher
         self._volume_controls_available: bool = False
+        self._volume_controls_absolute: bool = False
+        self._volume_controls_relative: bool = False
         self._volume: float = 0.0
         self._volume_event: asyncio.Event = asyncio.Event()
+        self._output_devices: List[OutputDevice] = []
+        self._output_devices_event: asyncio.Event = asyncio.Event()
         self._add_listeners()
 
     @property
     def device_uid(self) -> Optional[str]:
         """Return the UID of our device."""
         if self.protocol.device_info is not None:
-            return self.protocol.device_info.inner().deviceUID  # type: ignore
+            inner = self.protocol.device_info.inner()
+            return inner.clusterID or inner.deviceUID  # type: ignore
         return None
 
     @property
     def is_available(self):
         """Return if audio controls are available."""
         return self._volume_controls_available and self.device_uid is not None
+
+    @property
+    def is_volume_absolute(self):
+        """Return if absolute audio controls are available."""
+        return self._volume_controls_absolute
+
+    @property
+    def is_volume_relative(self):
+        """Return if absolute audio controls are available."""
+        return self._volume_controls_relative
 
     def _add_listeners(self):
         self.protocol.listen_to(
@@ -753,6 +782,12 @@ class MrpAudio(Audio):
         )
         self.protocol.listen_to(
             protobuf.VOLUME_DID_CHANGE_MESSAGE, self._volume_did_change
+        )
+        self.protocol.listen_to(
+            protobuf.DEVICE_INFO_MESSAGE, self._update_output_devices
+        )
+        self.protocol.listen_to(
+            protobuf.DEVICE_INFO_UPDATE_MESSAGE, self._update_output_devices
         )
 
     async def _volume_control_availability(self, message) -> None:
@@ -769,6 +804,14 @@ class MrpAudio(Audio):
         self, availabilty_message: protobuf.VolumeControlAvailabilityMessage
     ) -> None:
         self._volume_controls_available = availabilty_message.volumeControlAvailable
+        self._volume_controls_absolute = availabilty_message.volumeCapabilities in {
+            protobuf.VolumeCapabilities.Absolute,
+            protobuf.VolumeCapabilities.Both,
+        }
+        self._volume_controls_relative = availabilty_message.volumeCapabilities in {
+            protobuf.VolumeCapabilities.Relative,
+            protobuf.VolumeCapabilities.Both,
+        }
         _LOGGER.debug(
             "Volume control availability changed to %s", self._volume_controls_available
         )
@@ -805,24 +848,69 @@ class MrpAudio(Audio):
 
         await self.protocol.send(messages.set_volume(self.device_uid, level / 100.0))
 
-        if self._volume != level:
+        if self.is_volume_absolute and self._volume != level:
             await asyncio.wait_for(self._volume_event.wait(), timeout=5.0)
 
     async def volume_up(self) -> None:
         """Increase volume by one step."""
-        if self._volume < 100.0:
+        if self.is_volume_absolute and self._volume == 100.0:
+            return
+        if self.is_volume_relative:
             await _send_hid_key(
                 self.protocol, "volume_up", InputAction.SingleTap, flush=False
             )
-            await asyncio.wait_for(self._volume_event.wait(), timeout=5.0)
+            if self.is_volume_absolute:
+                await asyncio.wait_for(self._volume_event.wait(), timeout=5.0)
+        elif self.is_volume_absolute:
+            await self.set_volume(min(self.volume + 5, 100.0))
 
     async def volume_down(self) -> None:
         """Decrease volume by one step."""
-        if self._volume > 0.0:
+        if self.is_volume_absolute and self._volume == 0.0:
+            return
+        if self.is_volume_relative:
             await _send_hid_key(
                 self.protocol, "volume_down", InputAction.SingleTap, flush=False
             )
-            await asyncio.wait_for(self._volume_event.wait(), timeout=5.0)
+            if self.is_volume_absolute:
+                await asyncio.wait_for(self._volume_event.wait(), timeout=5.0)
+        elif self.is_volume_absolute:
+            await self.set_volume(max(self.volume - 5, 0.0))
+
+    async def _update_output_devices(self, message: protobuf.ProtocolMessage) -> None:
+        inner = cast(protobuf.DeviceInfoMessage, message.inner())
+        devices = []
+        if inner.isGroupLeader and not inner.isProxyGroupPlayer:
+            devices.append(OutputDevice(inner.name, inner.uniqueIdentifier))
+        for device in list(inner.groupedDevices):
+            devices.append(OutputDevice(device.name, device.deviceUID))
+        self._output_devices = devices
+        self._output_devices_event.set()
+        self._output_devices_event.clear()
+        self.state_dispatcher.dispatch(UpdatedState.OutputDevices, devices)
+
+    @property
+    def output_devices(self) -> List[OutputDevice]:
+        """Return current list of output device IDs."""
+        return self._output_devices
+
+    async def add_output_devices(self, *devices: List[str]) -> None:
+        """Add output devices."""
+        await self.protocol.send(messages.add_output_devices(*devices))
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._output_devices_event.wait(), timeout=5.0)
+
+    async def remove_output_devices(self, *devices: List[str]) -> None:
+        """Remove output devices."""
+        await self.protocol.send(messages.remove_output_devices(*devices))
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._output_devices_event.wait(), timeout=5.0)
+
+    async def set_output_devices(self, *devices: List[str]) -> None:
+        """Set output devices."""
+        await self.protocol.send(messages.set_output_devices(*devices))
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._output_devices_event.wait(), timeout=5.0)
 
 
 class MrpFeatures(Features):
@@ -883,10 +971,16 @@ class MrpFeatures(Features):
         if feature_name in [
             FeatureName.VolumeDown,
             FeatureName.VolumeUp,
+        ]:
+            if self.audio.is_available:
+                return FeatureInfo(state=FeatureState.Available)
+            return FeatureInfo(state=FeatureState.Unavailable)
+
+        if feature_name in [
             FeatureName.Volume,
             FeatureName.SetVolume,
         ]:
-            if self.audio.is_available:
+            if self.audio.is_available and self.audio.is_volume_absolute:
                 return FeatureInfo(state=FeatureState.Available)
             return FeatureInfo(state=FeatureState.Unavailable)
 
@@ -959,11 +1053,12 @@ async def service_info(
     Pairing has never been enforced by MRP (maybe by design), but it is
     possible to pair if AllowPairing is YES.
     """
-    service.pairing = (
-        PairingRequirement.Optional
-        if service.properties.get("allowpairing", "no").lower() == "yes"
-        else PairingRequirement.Disabled
-    )
+    if not service.enabled:
+        service.pairing = PairingRequirement.NotNeeded
+    elif service.properties.get("allowpairing", "no").lower() == "yes":
+        service.pairing = PairingRequirement.Optional
+    else:
+        service.pairing = PairingRequirement.Disabled
 
 
 def create_with_connection(  # pylint: disable=too-many-locals

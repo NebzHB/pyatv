@@ -10,7 +10,9 @@ from pyatv.const import PairingRequirement, Protocol
 from pyatv.core import MutableService
 from pyatv.protocols.airplay.utils import (
     AirPlayFlags,
+    AirPlayMajorVersion,
     get_pairing_requirement,
+    get_protocol_version,
     is_password_required,
     is_remote_control_supported,
     parse_features,
@@ -85,6 +87,9 @@ def test_is_password_required(properties, requires_password):
         ({"sf": "0x8"}, PairingRequirement.Mandatory),
         ({"flags": "0x8"}, PairingRequirement.Mandatory),
         ({"flags": "0x0"}, PairingRequirement.NotNeeded),
+        # Corresponds to only allow "Current User", which is not
+        # supported by pyatv right now
+        ({"act": "2"}, PairingRequirement.Unsupported),
     ],
 )
 async def test_get_pairing_requirement(props, expected_req):
@@ -110,3 +115,27 @@ async def test_get_pairing_requirement(props, expected_req):
 def test_is_remote_control_supported(props, credentials, expected_supported):
     service = MutableService("id", Protocol.AirPlay, 0, props)
     assert is_remote_control_supported(service, credentials) == expected_supported
+
+
+@pytest.mark.parametrize(
+    "props, expected_version",
+    [
+        # Fallback
+        ({}, AirPlayMajorVersion.AirPlayV1),
+        # Used by RAOP
+        ({"ft": "0x5A7FFFF7,0xE"}, AirPlayMajorVersion.AirPlayV1),  # Apple TV 3
+        (
+            {"ft": "0x4A7FCA00,0xBC354BD0"},
+            AirPlayMajorVersion.AirPlayV2,
+        ),  # HomePod Mini
+        # Used by AirPlay
+        ({"features": "0x5A7FFFF7,0xE"}, AirPlayMajorVersion.AirPlayV1),  # Apple TV 3
+        (
+            {"features": "0x4A7FCA00,0xBC354BD0"},
+            AirPlayMajorVersion.AirPlayV2,
+        ),  # HomePod Mini
+    ],
+)
+def test_get_protocol_version(props, expected_version):
+    service = MutableService("id", Protocol.AirPlay, 0, props)
+    assert get_protocol_version(service) == expected_version

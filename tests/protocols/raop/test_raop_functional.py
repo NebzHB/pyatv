@@ -19,6 +19,7 @@ from pyatv import connect, exceptions
 from pyatv.const import DeviceState, FeatureName, FeatureState, MediaType, Protocol
 from pyatv.exceptions import AuthenticationError
 from pyatv.interface import FeatureInfo, MediaMetadata, Playing, PushListener
+from pyatv.protocols.airplay.utils import dbfs_to_pct
 
 from tests.utils import data_path, stub_sleep, until
 
@@ -536,9 +537,9 @@ async def test_teardown_called_after_playback(raop_client, raop_state):
     assert raop_state.teardown_called
 
 
-@pytest.mark.parametrize("raop_properties", [({"et": "0", "md": "0"})])
+@pytest.mark.parametrize("raop_properties", [({"et": "0", "md": "0,1"})])
 async def test_custom_metadata(raop_client, raop_state):
-    metadata = MediaMetadata(title="A", artist="B", album="C")
+    metadata = MediaMetadata(title="A", artist="B", album="C", artwork=b"abcd")
 
     await raop_client.stream.stream_file(
         data_path("only_metadata.wav"), metadata=metadata
@@ -546,6 +547,31 @@ async def test_custom_metadata(raop_client, raop_state):
 
     # Note: duration cannot be changed here
     assert raop_state.metadata.title == "A"
+    assert raop_state.metadata.artist == "B"
+    assert raop_state.metadata.album == "C"
+    assert raop_state.metadata.artwork == "abcd"
+
+
+@pytest.mark.parametrize("raop_properties", [({"et": "0", "md": "0"})])
+async def test_custom_metadata_no_artwork(raop_client, raop_state):
+    metadata = MediaMetadata(artwork=b"abcd")
+
+    await raop_client.stream.stream_file(
+        data_path("only_metadata.wav"), metadata=metadata
+    )
+
+    assert raop_state.metadata.artwork is None
+
+
+@pytest.mark.parametrize("raop_properties", [({"et": "0", "md": "0"})])
+async def test_custom_metadata_override_missing(raop_client, raop_state):
+    metadata = MediaMetadata(title="A", artist="B", album="C")
+
+    await raop_client.stream.stream_file(
+        data_path("only_title.wav"), metadata=metadata, override_missing_metadata=True
+    )
+
+    assert raop_state.metadata.title == "pyatv"
     assert raop_state.metadata.artist == "B"
     assert raop_state.metadata.album == "C"
 
@@ -582,4 +608,33 @@ async def test_stop_playback(raop_client, raop_state, button):
 
     await raop_client.stream.stream_file(data_path("audio_3_packets.wav"))
 
-    assert len(raop_state.raw_audio) == ONE_FRAME_IN_BYTES
+    assert len(raop_state.raw_audio) >= ONE_FRAME_IN_BYTES
+
+
+@pytest.mark.parametrize(
+    "files, raop_properties", [(["only_metadata.wav"], {"et": "0", "md": "0"})]
+)
+async def test_stream_metadata_from_http(
+    raop_client, raop_state, data_webserver, files
+):
+    file_url = data_webserver + files[0]
+    await raop_client.stream.stream_file(file_url)
+
+    assert raop_state.metadata.artist == "postlund"
+    assert raop_state.metadata.album == "raop"
+    assert raop_state.metadata.title == "pyatv"
+
+
+@pytest.mark.parametrize("raop_properties", [({"et": "0", "md": "0"})])
+async def test_stream_volume_set_after_stream_start(
+    raop_client, raop_state, raop_usecase
+):
+    raop_usecase.delayed_set_volume(True)
+
+    volume = 9
+
+    await raop_client.audio.set_volume(volume)
+    await raop_client.stream.stream_file(data_path("audio_1_packet_metadata.wav"))
+
+    assert math.isclose(raop_client.audio.volume, volume)
+    assert math.isclose(dbfs_to_pct(raop_state.volume), volume)

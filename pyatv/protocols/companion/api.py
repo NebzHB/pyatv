@@ -1,9 +1,9 @@
 """High level implementation of Companion API."""
-
+import asyncio
 from enum import Enum
 import logging
 from random import randint
-from typing import Any, Dict, Mapping, Optional, cast
+from typing import Any, Dict, List, Mapping, Optional, cast
 
 from pyatv import exceptions
 from pyatv.auth.hap_pairing import parse_credentials
@@ -21,6 +21,7 @@ from pyatv.protocols.companion.protocol import (
     CompanionProtocolListener,
     MessageType,
 )
+from pyatv.support.url import is_url_or_scheme
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,6 +71,17 @@ class MediaControlCommand(Enum):
     SetCaptionSettings = 13
 
 
+class SystemStatus(Enum):
+    """Current system state."""
+
+    Unknown = 0x00  # NB: Not a valid protocol entry (only used here)
+
+    Asleep = 0x01
+    Screensaver = 0x02
+    Awake = 0x03
+    Idle = 0x04  # NB: Not verified
+
+
 # pylint: enable=invalid-name
 
 
@@ -84,6 +96,7 @@ class CompanionAPI(
         self.core = core
         self._connection: Optional[CompanionConnection] = None
         self._protocol: Optional[CompanionProtocol] = None
+        self._subscribed_events: List[str] = []
         self.sid: int = 0
 
     async def disconnect(self):
@@ -92,10 +105,14 @@ class CompanionAPI(
             return
 
         try:
+            for event in self._subscribed_events:
+                await self.unsubscribe_event(event)
+
             # Sometimes unsubscribe fails for an unknown reason, but we are no
             # going to bother with that and just swallow the error.
-            await self.unsubscribe_event("_iMC")
             await self._session_stop()
+
+            await self._text_input_stop()
         except Exception as ex:
             _LOGGER.debug("Ignoring error during disconnect: %s", ex)
         finally:
@@ -127,6 +144,8 @@ class CompanionAPI(
 
         await self.system_info()
         await self._session_start()
+        await self._text_input_start()
+
         await self.subscribe_event("_iMC")
 
     async def _send_command(
@@ -219,15 +238,27 @@ class CompanionAPI(
 
     async def subscribe_event(self, event: str) -> None:
         """Subscribe to updates to an event."""
-        await self._send_event("_interest", {"_regEvents": [event]})
+        if event not in self._subscribed_events:
+            await self._send_event("_interest", {"_regEvents": [event]})
+            self._subscribed_events.append(event)
 
     async def unsubscribe_event(self, event: str) -> None:
         """Subscribe to updates to an event."""
-        await self._send_event("_interest", {"_deregEvents": [event]})
+        if event in self._subscribed_events:
+            await self._send_event("_interest", {"_deregEvents": [event]})
+            self._subscribed_events.remove(event)
 
-    async def launch_app(self, bundle_identifier: str) -> None:
+    async def launch_app(self, bundle_identifier_or_url: str) -> None:
         """Launch an app on the remote device."""
-        await self._send_command("_launchApp", {"_bundleID": bundle_identifier})
+        launch_command_key = (
+            "_urlS" if is_url_or_scheme(bundle_identifier_or_url) else "_bundleID"
+        )
+        await self._send_command(
+            "_launchApp",
+            {
+                launch_command_key: bundle_identifier_or_url,
+            },
+        )
 
     async def app_list(self) -> Mapping[str, Any]:
         """Return list of launchable apps on remote device."""
@@ -255,13 +286,23 @@ class CompanionAPI(
         """Send a HID command."""
         return await self._send_command("_mcc", {"_mcc": command.value, **(args or {})})
 
+    async def _text_input_start(self) -> Mapping[str, Any]:
+        response = await self._send_command("_tiStart", {})
+        await asyncio.gather(*self.dispatch("_tiStart", response.get("_c", {})))
+        return response
+
+    async def _text_input_stop(self) -> None:
+        await self._send_command("_tiStop", {})
+
     async def text_input_command(
         self,
         text: str,
         clear_previous_input: bool = False,
     ) -> Optional[str]:
         """Send a text input command."""
-        response = await self._send_command("_tiStart", {})
+        # restart the text input session so that we have up-to-date data
+        await self._text_input_stop()
+        response = await self._text_input_start()
         ti_data = response.get("_c", {}).get("_tiD")
 
         if ti_data is None:
@@ -296,5 +337,14 @@ class CompanionAPI(
             )
             current_text += text
 
-        await self._send_command("_tiStop", {})
         return current_text
+
+    async def fetch_attention_state(self) -> SystemStatus:
+        """Fetch attention state from device (system status)."""
+        resp = await self._send_command("FetchAttentionState", {})
+        content = resp.get("_c")
+
+        if content is None:
+            raise exceptions.ProtocolError("missing content")
+
+        return SystemStatus(content["state"])

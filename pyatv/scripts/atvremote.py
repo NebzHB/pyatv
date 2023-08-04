@@ -90,6 +90,7 @@ class GlobalCommands:
         _print_commands("Power", interface.Power)
         _print_commands("Playing", interface.Playing)
         _print_commands("AirPlay", interface.Stream)
+        _print_commands("Audio", interface.Audio)
         _print_commands("Keyboard", interface.Keyboard)
         _print_commands("Device Info", interface.DeviceInfo)
         _print_commands("Device", DeviceCommands)
@@ -114,6 +115,7 @@ class GlobalCommands:
             interface.DeviceInfo,
             interface.Apps,
             interface.Audio,
+            interface.Keyboard,
             self.__class__,
             DeviceCommands,
         ]
@@ -326,6 +328,16 @@ class PushListener(interface.PushListener):
         print(f"An error occurred (restarting): {exception}")
 
 
+class PowerListener(interface.PowerListener):
+    """Listen for power updates and print changes."""
+
+    def powerstate_update(
+        self, old_state: const.PowerState, new_state: const.PowerState
+    ):
+        """Device power state was updated."""
+        print("New power state:", new_state.name)
+
+
 class DeviceListener(interface.DeviceListener):
     """Internal listener for generic device updates."""
 
@@ -442,6 +454,13 @@ async def cli_handler(loop):
     )
 
     parser.add_argument(
+        "--service-properties",
+        dest="service_properties",
+        default="",
+        help="manual MDNS properties",
+    )
+
+    parser.add_argument(
         "--raop-password",
         help="optional password for raop",
         dest="raop_password",
@@ -478,6 +497,8 @@ async def cli_handler(loop):
     args = parser.parse_args()
     if args.manual and isinstance(args.id, list):
         parser.error("--manual only supports one identifier to --id")
+    if not args.manual and args.service_properties:
+        parser.error("--service-properties only allowed with --manual")
 
     loglevel = logging.WARNING
     if args.verbose:
@@ -554,8 +575,20 @@ async def _autodiscover_device(args, loop):
 
 
 def _manual_device(args):
+    properties = {}
+    if args.service_properties:
+        # Service properties are specified according to Xvar1=val1Xvar2=var2"
+        # where X is any character not in any variable or value. Examples would be
+        # "":name=test:type=something" or ",name=test,type=something" (both are
+        # equal). No proper error checking here!
+        split_char = args.service_properties[0]
+        properties = dict(
+            var.split("=", maxsplit=1)
+            for var in args.service_properties[1:].split(split_char)
+        )
+
     config = AppleTV(IPv4Address(args.address), args.name)
-    service = ManualService(args.id, args.protocol, args.port, {})
+    service = ManualService(args.id, args.protocol, args.port, properties)
     service.credentials = getattr(args, f"{args.protocol.name.lower()}_credentials")
     service.password = args.raop_password
     config.add_service(service)
@@ -602,8 +635,10 @@ def _extract_command_with_args(cmd):
 async def _handle_commands(args, config, loop):
     device_listener = DeviceListener()
     push_listener = PushListener()
+    power_listener = PowerListener()
     atv = await connect(config, loop, protocol=args.protocol)
     atv.listener = device_listener
+    atv.power.listener = power_listener
 
     if atv.features.in_state(FeatureState.Available, FeatureName.PushUpdates):
         atv.push_updater.listener = push_listener

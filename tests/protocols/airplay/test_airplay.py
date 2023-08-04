@@ -4,7 +4,7 @@ from ipaddress import ip_address
 from deepdiff import DeepDiff
 import pytest
 
-from pyatv.const import DeviceModel, PairingRequirement, Protocol
+from pyatv.const import DeviceModel, OperatingSystem, PairingRequirement, Protocol
 from pyatv.core import MutableService, mdns
 from pyatv.interface import DeviceInfo
 from pyatv.protocols.airplay import device_info, scan, service_info
@@ -48,11 +48,29 @@ def test_airplay_device_info_name():
             {"model": "AppleTV6,2"},
             {DeviceInfo.MODEL: DeviceModel.Gen4K, DeviceInfo.RAW_MODEL: "AppleTV6,2"},
         ),
+        (
+            "_dummy._tcp.local",
+            {"model": "MacBookAir10,1"},
+            {
+                DeviceInfo.RAW_MODEL: "MacBookAir10,1",
+                DeviceInfo.OPERATING_SYSTEM: OperatingSystem.MacOS,
+            },
+        ),
         ("_dummy._tcp.local", {"osvers": "14.7"}, {DeviceInfo.VERSION: "14.7"}),
         (
             "_dummy._tcp.local",
             {"deviceid": "aa:bb:cc:dd:ee:ff"},
             {DeviceInfo.MAC: "aa:bb:cc:dd:ee:ff"},
+        ),
+        (
+            "_dummy._tcp.local",
+            {"pi": "AA:BB:CC:DD:EE:FF"},
+            {DeviceInfo.OUTPUT_DEVICE_ID: "AA:BB:CC:DD:EE:FF"},
+        ),
+        (
+            "_dummy._tcp.local",
+            {"psi": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", "pi": "AA:BB:CC:DD:EE:FF"},
+            {DeviceInfo.OUTPUT_DEVICE_ID: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"},
         ),
     ],
 )
@@ -101,6 +119,7 @@ async def test_service_info_password(airplay_props, mrp_props, requires_password
         ({"flags": "0x200"}, {}, PairingRequirement.Mandatory),
         ({"acl": "1"}, {}, PairingRequirement.Disabled),
         ({"acl": "1", "sf": "0x200"}, {}, PairingRequirement.Disabled),
+        ({"model": "Mac10,1"}, {}, PairingRequirement.Unsupported),
     ],
 )
 async def test_service_info_pairing(airplay_props, devinfo, pairing_req):

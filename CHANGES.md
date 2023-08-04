@@ -1,5 +1,381 @@
 # CHANGES
 
+## 0.13.3 Joe (2023-08-03)
+
+Time for a somewhat minor fix release:
+
+* The play_url functionality has been restored on tvOS
+* Pairing requirement is correctly determined for macOS
+* macOS has been added as an operating system
+* @bdraco has made some performance improvements when
+  scanning for devices
+
+**Changes:**
+
+*Protocol: MRP:*
+
+```
+dfcc82b mrp: Add some missing protobuf definitions
+5ad5103 mrp: Fix pairing requirement when disabled
+```
+
+*Protocol: AirPlay:*
+
+```
+54ff39e airplay: Handle Access Control Type
+c5772b3 airplay: Support stop with play_url
+c554ab7 airplay: Fix play_url with newer tvOS versions
+```
+
+*Protocol: RAOP:*
+
+```
+fef1667 raop: Use correct auth type for RAOP pairing
+```
+
+*Other:*
+
+```
+8022f68 Rework zeroconf for unicast scanning (#2083)
+42130e1 conf: Add macOS as operating system
+8b572fe http: Abort timeout if connection close
+7815a8f docs: Clarify atvremote app section
+```
+
+**All changes:**
+
+```
+8022f68 Rework zeroconf for unicast scanning (#2083)
+dfcc82b mrp: Add some missing protobuf definitions
+b91dfae build(deps): Bump cryptography from 41.0.2 to 41.0.3 in /requirements
+06cb03e build(deps): Bump zeroconf from 0.71.4 to 0.71.5 in /requirements
+54ff39e airplay: Handle Access Control Type
+42130e1 conf: Add macOS as operating system
+b8f793e build(deps): Bump flake8 from 6.0.0 to 6.1.0 in /requirements
+c3e0a52 build(deps): Bump pylint from 2.17.4 to 2.17.5 in /requirements
+6e89d8c build(deps): Bump types-protobuf in /requirements
+18edbf4 build(deps): Bump chacha20poly1305-reuseable in /requirements
+9cd5a4a build(deps): Bump zeroconf from 0.71.0 to 0.71.4 in /requirements
+c5772b3 airplay: Support stop with play_url
+c554ab7 airplay: Fix play_url with newer tvOS versions
+8b572fe http: Abort timeout if connection close
+0c61914 build(deps): Bump types-requests in /requirements
+3d3f9e8 build(deps): Bump aiohttp from 3.8.4 to 3.8.5 in /requirements
+353faa9 build(deps): Bump pytest-asyncio from 0.21.0 to 0.21.1 in /requirements
+5ad5103 mrp: Fix pairing requirement when disabled
+fef1667 raop: Use correct auth type for RAOP pairing
+a01117d build(deps): Bump cryptography from 41.0.1 to 41.0.2 in /requirements
+5ede5a9 build(deps): Bump black from 23.3.0 to 23.7.0 in /requirements
+e5bf455 build(deps): Bump zeroconf from 0.70.0 to 0.71.0 in /requirements
+cef7b74 build(deps): Bump deepdiff from 6.3.0 to 6.3.1 in /requirements
+67ad564 build(deps): Bump protobuf from 4.23.3 to 4.23.4 in /requirements
+7815a8f docs: Clarify atvremote app section
+11ab076 build(deps): Bump typed-ast from 1.5.4 to 1.5.5 in /requirements
+b6514e8 build(deps): Bump mediafile from 0.11.0 to 0.12.0 in /requirements
+2d70d8b build(deps): Bump zeroconf from 0.69.0 to 0.70.0 in /requirements
+```
+
+## 0.13.2 Itchy (2023-06-27)
+
+Hitting it hard with new releases lately, here's another one:
+
+* Artwork can now be set when streaming
+* Metadata can be overridden only when missing
+* New helper method: helpers.is_device_supported
+* `bitarray` dependency has been dropped (no longer needed)
+* Bug: AirPlay in macOS is ignored until I can support it
+* Bug: Improved AirPlay 2 detection
+
+So, this release makes it possible to provide artwork as part of metadata when
+streaming files. It also adds a new flag, `override_missing_metadata`, that
+(when set) will use metadata provided by what is streamed but use custom
+metadata when some fields are missing. So if `title` is not in the stream, you
+can now provide that but still keep things like `album` and `artist` from
+the stream.
+
+A new helper method, `helpers.is_device_support`, has been added that returns
+boolean indicating if pyatv can interact with that device or not.
+
+And some bug fixes. Namely: computers running macOS with AirPlay receiver
+enabled (requires macOS 12 or later) are currently ignored as they aren't
+supported. I will try to fix that when I can. Also, detection of AirPlay 2
+devices has been improved. Some older devices (like Apple TV 3) was
+discovered as AirPlay 2 devices, breaking `stream_file` support.
+
+**Changes:**
+
+*Protocol: AirPlay:*
+
+```
+20a7524 airplay: Fix AirPlay major version detection
+703dc74 airplay: Disable AirPlay for macOS
+```
+
+*Protocol: RAOP:*
+
+```
+6beda0c raop: Allow setting artwork
+7b534d5 raop: Support override missing stream fields
+```
+
+*Other:*
+
+```
+70ce630 support: Add missing metadata tests
+3f054a0 deps: Remove bitarray code
+8ee9b61 helpers: Add is_device_supported
+```
+
+**All changes:**
+
+```
+20a7524 airplay: Fix AirPlay major version detection
+70ce630 support: Add missing metadata tests
+6beda0c raop: Allow setting artwork
+7b534d5 raop: Support override missing stream fields
+703dc74 airplay: Disable AirPlay for macOS
+3f054a0 deps: Remove bitarray code
+8ee9b61 helpers: Add is_device_supported
+9cbeeae build(deps): Bump bitarray from 2.7.5 to 2.7.6 in /requirements
+60b7052 build(deps): Bump pytest from 7.3.2 to 7.4.0 in /requirements
+1630694 build(deps): Bump mypy from 1.4.0 to 1.4.1 in /requirements
+```
+
+## 0.13.1 Homer (2023-06-22)
+
+Small patch release coming up! Second generation HomePod has
+been added as device type. A bug when streaming from a buffer
+(something inheriting BufferedIOBase) has been fixed. The bug
+would render metadata detection unusable and playback to cut
+off early.
+
+Previous releases would send raw PCM samples encapsulated in
+Apple Lossless Audio Codec (ALAC) frames. This is now changed
+to send pure raw audio frames instead (without ALAC). This
+has a big benefit in regards to performance as the ALAC
+header is not byte-aligned, so it required a lot of bit
+shifting and memory copying. This was extremly noticable on
+low-end systems like raspberry pi. Hopefully the performance
+is a lot better now. Issue #2057 contains more details
+regarding this for those interested.
+
+**Changes:**
+
+*Protocol: RAOP:*
+
+```
+51dffc9 raop: Send autio as raw PCM
+3d4c5ff raop: Fix bug when streaming from buffer
+```
+
+*Other:*
+
+```
+02a8cab device: Add second generation HomePod
+```
+
+**All changes:**
+
+```
+dd773cc build(deps): Bump mypy from 1.3.0 to 1.4.0 in /requirements
+fb18e3a build(deps): Bump zeroconf from 0.66.0 to 0.69.0 in /requirements
+02a8cab device: Add second generation HomePod
+51dffc9 raop: Send autio as raw PCM
+3d4c5ff raop: Fix bug when streaming from buffer
+```
+
+## 0.13.0 Grandpa (2023-06-15)
+
+This release contains some big new stuff, really nice. In summary we have:
+
+* Basic support for audio streaming using AirPlay 2
+* Proper power state support in Companion
+* Support for activating screensaver
+* Improved buffering of audio when streaming
+* Added support for changing output devices in tvOS (@michalmo)
+* atvproxy now supports MRP-over-AirPlay (@michalmo)
+* Bug: Absolute/relative volume management is greatly improved (@michalmo)
+* Bug: Position calculation improved in MRP
+
+One of the big new things in this release is support for streaming audio via
+AirPlay 2. Streaming via AirPlay 1 has been possible for quite some time now
+and that is "good enough" (based on what pyatv supports) with Apple devices,
+but not most 3rd party receivers as lots of them only support AirPlay 2. From
+now on however, pyatv can be used to stream audio to previously unsupported
+receivers, like Sonos for instance. It is still not possible to use controls
+like pause and skip next, but metadata should work fine. More features will
+be added over time. Main driver for this feature is using any AirPlay 2
+receiver for Text-To-Speech (TTS) in Home Assistant.
+
+Another feature lots of people have been asking for is an API to change output
+device(s) on their Apple TV. This allows for changing audio device to for
+instance a HomePod instead of the built-in TV speakers. @michalmo took a
+crack at and implemented that (fixing AirPlay support in atvproxy whilst doing
+so). Active devices can be listed or removed and new devices added, nice!
+
+Yet another feature/bug fix is buffering support for non-seekable streams when
+streaming audio via RAOP. When streaming from an Internet source for instance,
+pyatv would "consume" data in a linear fashion (get X bytes, stream that, throw
+it away, get next X bytes, etc.). For some formats this works fine, but a few
+requires seeking, i.e. looking into the future of the stream and then going
+back to the start again. This is not possible if the buffer is not seekable,
+which is the case for an Internet source. I have now added general buffering
+support for the beginning of a anything being streamed, improving streaming
+support a lot. It also allows for extracting metadata from more formats, even
+Internet sources, so that's a big improvements as well. It's not bulletproof,
+so milage may vary. Again, main driver for this is Home Assistant. Some
+TTS integrations, like picoTTS, would not work because the generated file
+required seeking (due to file format being wav I think). This release should
+fix that.
+
+One more thing... proper standby detection via Companion! Recently (not exactly
+sure which version) Apple added "SystemStatus" support over Companion. The
+system status reflects whether a device is in standby or awake mode (or even
+has the screensaver active). Changes are pushed as an event, so pyatv will
+get notified as soon as the state changes. I hope this will help a lot of
+people having problem with device state, like we see a lot of in Home
+Assistant.
+
+**Changes:**
+
+*Protocol: MRP:*
+
+```
+850547e mrp: Fix position if playbackRate is 0.0
+```
+
+*Protocol: AirPlay:*
+
+```
+8badbf7 Support volume control for an Apple TV connected to HomePod(s) instead of TV speakers
+254694c Control AirPlay output devices (#2044)
+```
+
+*Protocol: Companion:*
+
+```
+74b3fc4 companion: Implement SystemStatus support
+62f6654 companion: Add screensaver support
+```
+
+*Protocol: RAOP:*
+
+```
+6d46726 raop: Basic AirPlay 2 streaming
+bb20742 raop: Migrate remaining buffers to SemiSeekableBuffer
+4807f0f raop: Migrate PatchedIceCastClient to SemiSeekableBuffer
+```
+
+*Script: atvremote:*
+
+```
+139bc4b atvremote: Allow custom service properties
+```
+
+**All changes:**
+
+```
+74b3fc4 companion: Implement SystemStatus support
+850547e mrp: Fix position if playbackRate is 0.0
+10e207f raop: Handle setting volume later
+ab8ee57 raop: Add feedback to AirPlay 2 streaming
+6d46726 raop: Basic AirPlay 2 streaming
+139bc4b atvremote: Allow custom service properties
+12d9b5a airplay: Change RemoteControl to AP2Session
+290a1e0 rtsp: Make handling of bplists more general
+8badbf7 Support volume control for an Apple TV connected to HomePod(s) instead of TV speakers
+b99b4f8 Volume control improvements
+8815d02 build(deps): Bump codespell from 2.2.4 to 2.2.5 in /requirements
+979e61e build(deps): Bump protobuf from 4.23.2 to 4.23.3 in /requirements (#2051)
+a3e3d51 add FeatureName.TextFocusState to supported features for Companion (#2047)
+254694c Control AirPlay output devices (#2044)
+bb20742 raop: Migrate remaining buffers to SemiSeekableBuffer
+4807f0f raop: Migrate PatchedIceCastClient to SemiSeekableBuffer
+44a4c7a support: Add a SemiSeekableBuffer
+ca8c928 build(deps): Bump zeroconf from 0.64.1 to 0.66.0 in /requirements
+eeba576 build(deps): Bump bitarray from 2.7.4 to 2.7.5 in /requirements
+72f2f92 build(deps): Bump pytest from 7.3.1 to 7.3.2 in /requirements
+62f6654 companion: Add screensaver support
+e66aa2e if: Update doc string for pause
+4a66c5d tests: Fix some streaming instability in RAOP
+fbf02c3 cq: Disable deprecated warnings in pyatv tests
+ff89c26 update documentation
+d500480 unify identifiers and credentials
+83be27e add tests for HAP and transient auth
+0b75957 update tests to use airplay.server_auth
+a311b8b support segmented requests in BasicHttpServer
+054b9e5 rewrite identifiers to improve connection
+7a307c2 add protobuf ConfigureConnectionMessage
+fa006ff add field to UpdateOutputDeviceMessage
+6ca50c1 regenerate protobuf code
+d192759 log decoded channel messages
+5ebc663 replace CaseInsensitiveDict in pyatv.support.http with version from requests that preserves input case, which is better for proxying
+443f7d1 add public methods to pyatv.http to format requests and reponses
+ee9523b initial airplay proxy working with pyatv client
+```
+
+## 0.12.1 Frankie (2023-06-08)
+
+Time for a new release. Here it goes:
+
+* Support for custom metadata when streaming audio
+* StreamReader (asyncio) can be used as streaming audio source
+* @a1ex4 fixed compatibility with shairport-sync
+* @michalmo added listener interface for keyboard focus
+* @Shraymonks added a few new tvOs versions and ATV 4K gen3
+* @michalmo addded deep linking support to launch_app
+
+A little of this and a little bit of that. It's so much fun
+to see new contributors to the project! I love it, keep up
+the good work!
+
+**Changes:**
+
+*Protocol: RAOP:*
+
+```
+e538496 raop: Support custom metadata when streaming (#2011)
+ec6a9fd raop: Support asyncio StreamReader when streaming (#2010)
+```
+
+*Other:*
+
+```
+8b3c15e added listener interface to Keyboard for focus updates
+ed7ac4b Fix shairport-sync player support
+9ef3ddc Add support for URL param to LaunchApp (#2024)
+8bf62de Add Apple TV 4k (gen3) and new tvOS versions
+```
+
+**All changes:**
+
+```
+0ce95c0 build(deps): Bump zeroconf from 0.64.0 to 0.64.1 in /requirements
+dcab463 change exception type based on code review
+53a4739 added Keyboard interface documentation
+8b3c15e added listener interface to Keyboard for focus updates
+990a82f preserve integer sizes when decoding/re-encoding with opack, fixes companion proxy stability
+d508f35 build(deps): Bump zeroconf from 0.63.0 to 0.64.0 in /requirements
+656ba7e build(deps): Bump miniaudio from 1.57 to 1.59 in /requirements
+ed7ac4b Fix shairport-sync player support
+062fc73 gha: Fix python version in logs workflow
+9966ce8 gha: Use python 3.10 for log parsing
+afe74a5 gha: Update log tests job
+95f2b5c build(deps): Bump cryptography from 41.0.0 to 41.0.1 in /requirements
+9ef3ddc Add support for URL param to LaunchApp (#2024)
+5633765 build(deps): Bump cryptography from 40.0.2 to 41.0.0 in /requirements
+20aa9a8 build(deps): Bump bitarray from 2.7.3 to 2.7.4 in /requirements
+50be0f8 build(deps): Bump types-requests in /requirements
+001ea0e build(deps): Bump protobuf from 4.23.1 to 4.23.2 in /requirements
+dcbf581 gha: Fix building docker images
+4f9b1c8 build(deps): Bump pytest-cov from 4.0.0 to 4.1.0 in /requirements
+6c05064 build(deps): Bump zeroconf from 0.62.0 to 0.63.0 in /requirements
+8bf62de Add Apple TV 4k (gen3) and new tvOS versions
+e538496 raop: Support custom metadata when streaming (#2011)
+ec6a9fd raop: Support asyncio StreamReader when streaming (#2010)
+747fd46 env: Install correct miniaudio on GHA (#2012)
+```
+
 ## 0.12.0 Edna (2023-05-24)
 
 @michalmo has been working hard to bring you this release.

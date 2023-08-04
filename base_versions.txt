@@ -1,6 +1,5 @@
 aiohttp==3.8.3,<5
-async_timeout==4.0.2
-bitarray==2.1.2
+async-timeout==4.0.2
 cryptography==36.0.2
 chacha20poly1305-reuseable==0.0.3
 ifaddr==0.1.7
@@ -9,4 +8,4 @@ miniaudio==1.45
 protobuf==4.22.0
 requests==2.23.0
 srptools==0.2.0
-zeroconf==0.38.1
+zeroconf==0.72.0

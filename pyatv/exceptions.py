@@ -16,6 +16,10 @@ class ConnectionFailedError(Exception):
     """Thrown when connection fails, e.g. refused or timed out."""
 
 
+class ConnectionLostError(Exception):
+    """Thrown when a connection is lost."""
+
+
 class PairingError(Exception):
     """Thrown when pairing fails."""
 
@@ -117,3 +121,7 @@ class BlockedStateError(Exception):
 
 class InvalidResponseError(Exception):
     """Thrown when a remote sends an invalid response."""
+
+
+class OperationTimeoutError(Exception):
+    """Raised when a timeout happens."""

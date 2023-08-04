@@ -4,19 +4,23 @@ import asyncio
 import binascii
 import functools
 import logging
-from os import environ
+from os import environ, path
+from typing import Any, Union
 import warnings
 
 from google.protobuf.text_format import MessageToString
 
+import pyatv
 from pyatv import exceptions
 
 _PROTOBUF_LINE_LENGTH = 150
 _BINARY_LINE_LENGTH = 512
 
 
-def _shorten(text, length):
-    return text if len(text) < length else text[: length - 3] + "..."
+def _shorten(text: Union[str, bytes], length: int) -> str:
+    if isinstance(text, str):
+        return text if len(text) < length else (text[: length - 3] + "...")
+    return str(text if len(text) < length else (text[: length - 3] + b"..."))
 
 
 def _log_value(value):
@@ -25,6 +29,39 @@ def _log_value(value):
     if isinstance(value, bytes):
         return binascii.hexlify(bytearray(value or b"")).decode()
     return str(value)
+
+
+def prettydataclass(max_length: int = 150):
+    """Prettify dataclasses.
+
+    Prettify an existing dataclass by replacing __repr__ with a method that
+    shortens variables to a max length, greatly reducing output for long strings
+    in debug logs.
+    """
+
+    def _repr(self) -> str:
+        def _format(value: Any) -> str:
+            if isinstance(value, (str, bytes)):
+                return _shorten(value, max_length)
+            return value
+
+        return (
+            self.__class__.__name__
+            + "("
+            + ", ".join(
+                [
+                    f"{f}={_format(getattr(self, f))}"
+                    for f in self.__dataclass_fields__.keys()
+                ]
+            )
+            + ")"
+        )
+
+    def _wrap(cls):
+        setattr(cls, "__repr__", _repr)
+        return cls
+
+    return _wrap
 
 
 async def error_handler(func, fallback, *args, **kwargs):
@@ -68,20 +105,36 @@ def log_protobuf(logger, text, message):
         logger.debug("%s: %s", text, msg_str)
 
 
+def _running_in_pyatv_repo() -> bool:
+    """Return pyatv is run via pytest inside its own repo."""
+    current_test = environ.get("PYTEST_CURRENT_TEST")
+    if current_test:
+        pyatv_path = path.dirname(path.dirname(pyatv.__file__))
+        test_file = current_test.split("::")[0]
+        abs_path = path.join(pyatv_path, test_file)
+        return path.exists(abs_path)
+    return False
+
+
 # https://stackoverflow.com/questions/2536307/
 #   decorators-in-the-python-standard-lib-deprecated-specifically
 def deprecated(func):
     """Decorate functions that are deprecated."""
+    if _running_in_pyatv_repo():
+        return func
 
     @functools.wraps(func)
     def new_func(*args, **kwargs):
-        warnings.simplefilter("always", DeprecationWarning)  # turn off filter
-        warnings.warn(
-            f"Call to deprecated function {func.__name__}.",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
-        warnings.simplefilter("default", DeprecationWarning)  # reset filter
+        # Tests typically call deprecated methods, yielding warnings. Suppress these
+        # warnings when running tests with pytest.
+        if not _running_in_pyatv_repo():
+            warnings.simplefilter("always", DeprecationWarning)  # turn off filter
+            warnings.warn(
+                f"Call to deprecated function {func.__name__}.",
+                category=DeprecationWarning,
+                stacklevel=2,
+            )
+            warnings.simplefilter("default", DeprecationWarning)  # reset filter
         return func(*args, **kwargs)
 
     return new_func
@@ -102,9 +155,9 @@ def map_range(
 
 def shift_hex_identifier(identifier: str) -> str:
     """Repeatably modify a unique identifier to avoid collisions."""
-    assert len(identifier) > 0
+    assert len(identifier) >= 2
     first, rest = identifier[:2], identifier[2:]
     shifted = f"{(int(first, 16) + 1) % 256:02x}"
-    if first.isupper():
+    if identifier.isupper():
         shifted = shifted.upper()
     return shifted + rest

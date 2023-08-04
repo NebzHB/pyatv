@@ -26,7 +26,7 @@ _AIRPLAY_HEADERS = {
     "Content-Type": "application/octet-stream",
 }
 
-_TRANSIENT_PIN = 3939
+TRANSIENT_PIN = 3939
 
 
 class AirPlayHapTransientPairVerifyProcedure(PairVerifyProcedure):
@@ -47,7 +47,13 @@ class AirPlayHapTransientPairVerifyProcedure(PairVerifyProcedure):
 
         await self.http.post("/pair-pin-start", headers=_AIRPLAY_HEADERS)
 
-        data = {hap_tlv8.TlvValue.Method: b"\x00", hap_tlv8.TlvValue.SeqNo: b"\x01"}
+        data = {
+            hap_tlv8.TlvValue.Method: b"\x00",
+            hap_tlv8.TlvValue.SeqNo: b"\x01",
+            hap_tlv8.TlvValue.Flags: int.to_bytes(
+                hap_tlv8.Flags.TransientPairing.value, 1, byteorder="big"
+            ),
+        }
         resp = await self.http.post(
             "/pair-setup", body=hap_tlv8.write_tlv(data), headers=_AIRPLAY_HEADERS
         )
@@ -60,7 +66,7 @@ class AirPlayHapTransientPairVerifyProcedure(PairVerifyProcedure):
         atv_salt = pairing_data[hap_tlv8.TlvValue.Salt]
         atv_pub_key = pairing_data[hap_tlv8.TlvValue.PublicKey]
 
-        self.srp.step1(_TRANSIENT_PIN)
+        self.srp.step1(TRANSIENT_PIN)
 
         pub_key, proof = self.srp.step2(atv_pub_key, atv_salt)
         data = {

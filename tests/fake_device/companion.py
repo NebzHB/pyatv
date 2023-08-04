@@ -1,16 +1,19 @@
 """Fake Companion Apple TV for tests."""
 
 import asyncio
+from enum import IntFlag, auto
 import logging
 import plistlib
-from typing import Dict, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 
+from pyatv.const import KeyboardFocusState
 from pyatv.protocols.companion import (
     HidCommand,
     MediaControlCommand,
     MediaControlFlags,
     keyed_archiver,
 )
+from pyatv.protocols.companion.api import SystemStatus
 from pyatv.protocols.companion.connection import FrameType
 from pyatv.protocols.companion.server_auth import CompanionServerAuth
 from pyatv.support import chacha20, log_binary, opack
@@ -42,6 +45,7 @@ HID_BUTTON_MAP = {
     HidCommand.PlayPause: "play_pause",
     HidCommand.ChannelIncrement: "channel_up",
     HidCommand.ChannelDecrement: "channel_down",
+    HidCommand.Screensaver: "screensaver",
 }
 
 MEDIA_CONTROL_MAP = {
@@ -53,10 +57,26 @@ MEDIA_CONTROL_MAP = {
 }
 
 
+class CompanionServiceFlags(IntFlag):
+    """Flags used to alter fake service behavior."""
+
+    EMPTY = auto()
+    """Empty service flag."""
+
+    SYSTEM_STATUS_SUPPORTED = auto()
+    """If system status is supported."""
+
+
 class FakeCompanionState:
     def __init__(self):
         """State of a fake Companion device."""
+        self.flags: CompanionServiceFlags = (
+            CompanionServiceFlags.EMPTY | CompanionServiceFlags.SYSTEM_STATUS_SUPPORTED
+        )
+        self.clients: List[FakeCompanionService] = []
+        self._system_status: SystemStatus = SystemStatus.Awake
         self.active_app: Optional[str] = None
+        self.open_url: Optional[str] = None
         self.installed_apps: Dict[str, str] = {}
         self.active_account: Optional[str] = None
         self.available_accounts: Dict[str, str] = {}
@@ -68,8 +88,87 @@ class FakeCompanionState:
         self.media_control_flags: int = MediaControlFlags.Volume
         self.interests: Set[str] = set()
         self.volume: float = INITIAL_VOLUME
+        self.rti_clients: List[FakeCompanionService] = []
+        self._rti_focus_state: KeyboardFocusState = KeyboardFocusState.Focused
         self.rti_text: Optional[str] = INITIAL_RTI_TEXT
         self.rti_session_uuid: Optional[bytes] = None
+
+    def is_supported(self, flag: CompanionServiceFlags) -> bool:
+        """Return if a feature is supported."""
+        return flag in self.flags
+
+    def set_flag_state(self, flag: CompanionServiceFlags, enabled: bool) -> None:
+        """Set if a feature is supported or not."""
+        if enabled:
+            self.flags |= flag
+        else:
+            self.flags &= ~flag
+
+    @property
+    def system_status(self) -> SystemStatus:
+        return self._system_status
+
+    @system_status.setter
+    def system_status(self, value) -> None:
+        self._system_status = value
+
+        # Only send event updates if feature is supported
+        if self.is_supported(CompanionServiceFlags.SYSTEM_STATUS_SUPPORTED):
+            for client in self.clients:
+                client.send_event(
+                    "SystemStatus", 1234, {"state": self.system_status.value}
+                )
+
+    def _send_rti(self, identifier, content):
+        for client in self.rti_clients:
+            client.send_event(identifier, 1234, content)
+
+    @property
+    def rti_focus_state(self) -> KeyboardFocusState:
+        return self._rti_focus_state
+
+    @rti_focus_state.setter
+    def rti_focus_state(self, value: KeyboardFocusState) -> None:
+        if value == self._rti_focus_state:
+            return
+        self._rti_focus_state = value
+        if value == KeyboardFocusState.Focused:
+            self._send_rti("_tiStarted", self.rti_encoded_data)
+        elif value == KeyboardFocusState.Unfocused:
+            self._send_rti("_tiStopped", self.rti_encoded_data)
+
+    @property
+    def rti_encoded_data(self) -> Mapping[str, Any]:
+        if self.rti_focus_state == KeyboardFocusState.Focused:
+            return {
+                "_tiD": plistlib.dumps(
+                    {
+                        "$top": {
+                            "sessionUUID": plistlib.UID(1),
+                            "documentState": plistlib.UID(2),
+                        },
+                        "$objects": [
+                            "$null",
+                            self.rti_session_uuid,
+                            {
+                                "docSt": plistlib.UID(3),
+                            },
+                        ]
+                        + [
+                            {
+                                "contextBeforeInput": plistlib.UID(4),
+                            },
+                            self.rti_text,
+                        ]
+                        if self.rti_text is not None
+                        else [{}],
+                    },
+                    fmt=plistlib.PlistFormat.FMT_BINARY,
+                    sort_keys=False,
+                )
+            }
+        else:
+            return {}
 
 
 class FakeCompanionServiceFactory:
@@ -115,10 +214,12 @@ class FakeCompanionService(CompanionServerAuth, asyncio.Protocol):
     def connection_made(self, transport):
         _LOGGER.debug("Client connected")
         self.transport = transport
+        self.state.clients.append(self)
 
     def connection_lost(self, exc):
         _LOGGER.debug("Client disconnected")
         self.transport = None
+        self.state.clients.remove(self)
 
     def enable_encryption(self, output_key: bytes, input_key: bytes) -> None:
         """Enable encryption with specified keys."""
@@ -175,7 +276,7 @@ class FakeCompanionService(CompanionServerAuth, asyncio.Protocol):
                     if hasattr(self, handler_method_name):
                         getattr(self, handler_method_name)(unpacked)
                     else:
-                        _LOGGER.warning("No handler for type %s", unpacked["_i"])
+                        self.send_handler_not_supported(unpacked)
 
             except Exception:
                 _LOGGER.exception("failed to handle incoming data")
@@ -202,18 +303,24 @@ class FakeCompanionService(CompanionServerAuth, asyncio.Protocol):
             },
         )
 
-    def send_error(self, request, message):
+    def send_error(
+        self, request, message, /, code: int = 1337, domain: str = "RPErrorDomain"
+    ):
         self.send_to_client(
             FrameType.E_OPACK,
             {
                 "_i": request["_i"],
                 "_x": request["_x"],
                 "_t": 3,
-                "_ec": 1337,
-                "_ed": "RPErrorDomain",
+                "_ec": code,
+                "_ed": domain,
                 "_em": message,
             },
         )
+
+    def send_handler_not_supported(self, request):
+        _LOGGER.warning("No handler for type %s", request["_i"])
+        self.send_error(request, "No request handler", code=58822)
 
     def volume_changed(self, new_volume: float):
         self.state.volume = min(max(new_volume, 0.0), 100.0)
@@ -226,7 +333,12 @@ class FakeCompanionService(CompanionServerAuth, asyncio.Protocol):
         )
 
     def handle__launchapp(self, message):
-        self.state.active_app = message["_c"]["_bundleID"]
+        bundle_id = message["_c"].get("_bundleID")
+        url = message["_c"].get("_urlS")
+        if bundle_id is not None:
+            self.state.active_app = bundle_id
+        elif url is not None:
+            self.state.open_url = url
         self.send_response(message, {})
 
     def handle_fetchlaunchableapplicationsevent(self, message):
@@ -325,36 +437,13 @@ class FakeCompanionService(CompanionServerAuth, asyncio.Protocol):
             return
         elif self.state.rti_text is None:
             self.send_response(message, {})
+            self.state.rti_clients.append(self)
         elif self.state.rti_session_uuid is not None:
             _LOGGER.warning("RTI session already started")
         else:
             self.state.rti_session_uuid = b"0123456789abcdef"
-            self.send_response(
-                message,
-                {
-                    "_tiD": plistlib.dumps(
-                        {
-                            "$top": {
-                                "sessionUUID": plistlib.UID(1),
-                                "documentState": plistlib.UID(2),
-                            },
-                            "$objects": [
-                                "$null",
-                                self.state.rti_session_uuid,
-                                {
-                                    "docSt": plistlib.UID(3),
-                                },
-                                {
-                                    "contextBeforeInput": plistlib.UID(4),
-                                },
-                                self.state.rti_text,
-                            ],
-                        },
-                        fmt=plistlib.PlistFormat.FMT_BINARY,
-                        sort_keys=False,
-                    )
-                },
-            )
+            self.send_response(message, self.state.rti_encoded_data)
+            self.state.rti_clients.append(self)
 
     def handle__tistop(self, message):
         if message["_t"] != 2:
@@ -362,6 +451,7 @@ class FakeCompanionService(CompanionServerAuth, asyncio.Protocol):
         elif self.state.rti_session_uuid is not None:
             self.state.rti_session_uuid = None
             self.send_response(message, {})
+            self.state.rti_clients.remove(self)
         else:
             _LOGGER.warning("No RTI session")
 
@@ -390,11 +480,18 @@ class FakeCompanionService(CompanionServerAuth, asyncio.Protocol):
         if insertion_text is not None:
             self.state.rti_text += insertion_text
 
+    def handle_fetchattentionstate(self, message):
+        if self.state.is_supported(CompanionServiceFlags.SYSTEM_STATUS_SUPPORTED):
+            _LOGGER.debug("Returning system status: %s", self.state.system_status)
+            self.send_response(message, {"state": self.state.system_status.value})
+        else:
+            self.send_handler_not_supported(message)
+
 
 class FakeCompanionUseCases:
     """Wrapper for altering behavior of a FakeCompanionService instance."""
 
-    def __init__(self, state):
+    def __init__(self, state: FakeCompanionState):
         """Initialize a new FakeCompanionUseCases."""
         self.state = state
 
@@ -410,5 +507,12 @@ class FakeCompanionUseCases:
         """Set media control flags."""
         self.state.media_control_flags = flags
 
+    def set_rti_focus_state(self, state: KeyboardFocusState) -> None:
+        self.state.rti_focus_state = state
+
     def set_rti_text(self, text: Optional[str]) -> None:
         self.state.rti_text = text
+
+    def set_system_status(self, system_status: SystemStatus) -> None:
+        """Set a specific system state."""
+        self.state.system_status = system_status

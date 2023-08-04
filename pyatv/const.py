@@ -4,8 +4,8 @@
 from enum import Enum
 
 MAJOR_VERSION = "0"
-MINOR_VERSION = "12"
-PATCH_VERSION = "0"
+MINOR_VERSION = "13"
+PATCH_VERSION = "3"
 __short_version__ = f"{MAJOR_VERSION}.{MINOR_VERSION}"
 __version__ = f"{__short_version__}.{PATCH_VERSION}"
 
@@ -110,6 +110,19 @@ class PowerState(Enum):
     """Device is turned on."""
 
 
+class KeyboardFocusState(Enum):
+    """All supported keyboard focus states."""
+
+    Unknown = 0
+    """Keyboard focus state is not determinable."""
+
+    Unfocused = 1
+    """Keyboard is not focused."""
+
+    Focused = 2
+    """Keyboard is focused."""
+
+
 class OperatingSystem(Enum):
     """Operating system on device."""
 
@@ -128,6 +141,9 @@ class OperatingSystem(Enum):
     This OS is used by AirPort Express devices. It is not an official name but made up
     in pyatv as no official name has been found.
     """
+
+    MacOS = 4
+    """Operating system is macOS."""
 
 
 class DeviceModel(Enum):
@@ -172,6 +188,9 @@ class DeviceModel(Enum):
 
     AppleTV4KGen3 = 11
     """Device model is seventh generation Apple TV (Apple TV 4K gen 3)."""
+
+    HomePodGen2 = 12
+    """Device model is HomePod (second generation)."""
 
 
 class InputAction(Enum):
@@ -373,6 +392,9 @@ class FeatureName(Enum):
     PowerState = 32
     """Current device power state."""
 
+    Screensaver = 58
+    """Activate screen saver."""
+
     TurnOn = 33
     """Turn device on."""
 
@@ -384,6 +406,21 @@ class FeatureName(Enum):
 
     SetVolume = 46
     """Set volume level."""
+
+    OutputDevices = 59
+    """Current output devices."""
+
+    AddOutputDevices = 60
+    """Add output devices."""
+
+    RemoveOutputDevices = 61
+    """Remove output devices."""
+
+    SetOutputDevices = 62
+    """Set output devices."""
+
+    TextFocusState = 57
+    """Current virtual keyboard focus state."""
 
     TextGet = 51
     """Get current virtual keyboard text."""

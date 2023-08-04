@@ -158,6 +158,23 @@ still specify something. A simple call example looks like this:
 $ atvremote --manual --address 10.0.0.10 --port 49152 --protocol mrp --id test playing
 ```
 
+For testing purposes, it's possible to specify custom MDNS properties using
+`--service-properties`. This might be useful to tinker with certain flags that
+alter protocol behavior. The format looks like this:
+
+    Xvar1=value1Xvar2=value2
+
+Where `X` is any character not present in a variable name or value. A typical example
+might use `:` or `,` like this:
+
+    :name=test:flags=123
+
+An example call to `atvremote` might look like this:
+
+```shell
+$ atvremote --id "aa:bb:cc:dd:ee:ff" --address 10.0.10.253 --port 7000 --manual --protocol raop --service-properties :features=0x4A7FCA00,0xBC354BD0 --debug stream_file=never_gonna_give_you_up.mp3
+```
+
 # Pairing with a device
 
 In most cases you have to pair with a device and obtain *credentials* in order to communicate
@@ -325,7 +342,7 @@ Unsupported: Not supported by this device (or by pyatv)
 
 ## Apps
 
-Show active app:
+Show app currently playing something:
 
 ```shell
 $ atvremote --id 00:11:22:33:44:54 app
@@ -378,6 +395,41 @@ Or turn it off:
 Or check the current power state:
 
     $ atvremote -i 00:11:22:33:44:54 power_state
+
+## Output devices
+
+Show current output devices:
+
+```shell
+$ atvremote --id 00:11:22:33:44:54 --airplay-credentials `cat airplay_credentials` output_devices
+Device: Living room (AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE), Device: Bedroom (FFFFFFFF-GGGG-HHHH-IIII-JJJJJJJJJJJJ)
+```
+
+Only the AirPlay leader device returns the list of output devices, other
+connected AirPlay devices will return an empty list.
+
+Add output devices:
+
+```shell
+$ atvremote --id 00:11:22:33:44:54 --airplay-credentials `cat airplay_credentials` add_output_devices=FFFFFFFF-GGGG-HHHH-IIII-JJJJJJJJJJJJ,KK:LL:MM:NN:OO:PP
+```
+
+Remove output devices:
+
+```shell
+$ atvremote --id 00:11:22:33:44:54 --airplay-credentials `cat airplay_credentials` remove_output_devices=AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE,FFFFFFFF-GGGG-HHHH-IIII-JJJJJJJJJJJJ
+```
+
+Set output devices:
+
+```shell
+$ atvremote --id 00:11:22:33:44:54 --airplay-credentials `cat airplay_credentials` 
+set_output_devices=AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE,FFFFFFFF-GGGG-HHHH-IIII-JJJJJJJJJJJJ,KK:LL:MM:NN:OO:PP
+```
+
+To discover device IDs to use with these commands, add the devices through the
+iOS UI, then use the `output_devices` command.
+
 
 # Logging and debugging
 

@@ -11,7 +11,9 @@ from pyatv.const import (
     FeatureName,
     FeatureState,
     InputAction,
+    KeyboardFocusState,
     PairingRequirement,
+    PowerState,
     Protocol,
 )
 from pyatv.core import Core, MutableService, SetupData, UpdatedState, mdns
@@ -37,7 +39,12 @@ from pyatv.interface import (
     UserAccount,
     UserAccounts,
 )
-from pyatv.protocols.companion.api import CompanionAPI, HidCommand, MediaControlCommand
+from pyatv.protocols.companion.api import (
+    CompanionAPI,
+    HidCommand,
+    MediaControlCommand,
+    SystemStatus,
+)
 from pyatv.protocols.companion.pairing import CompanionPairingHandler
 from pyatv.support.device_info import lookup_model
 from pyatv.support.http import ClientSessionManager
@@ -112,6 +119,7 @@ SUPPORTED_FEATURES = set(
         FeatureName.AccountList,
         FeatureName.SwitchAccount,
         # Power interface
+        FeatureName.PowerState,
         FeatureName.TurnOn,
         FeatureName.TurnOff,
         # Remote control (navigation, i.e. HID)
@@ -127,7 +135,9 @@ SUPPORTED_FEATURES = set(
         FeatureName.PlayPause,
         FeatureName.ChannelUp,
         FeatureName.ChannelDown,
+        FeatureName.Screensaver,
         # Keyboard interface
+        FeatureName.TextFocusState,
         FeatureName.TextGet,
         FeatureName.TextClear,
         FeatureName.TextAppend,
@@ -136,35 +146,6 @@ SUPPORTED_FEATURES = set(
     # Remote control (playback, i.e. Media Control)
     + list(MEDIA_CONTROL_MAP.keys())
 )
-
-
-class CompanionFeatures(Features):
-    """Implementation of supported feature functionality."""
-
-    def __init__(self, api: CompanionAPI) -> None:
-        """Initialize a new CompanionFeatures instance."""
-        super().__init__()
-        api.listen_to("_iMC", self._handle_control_flag_update)
-        self._control_flags = MediaControlFlags.NoControls
-
-    async def _handle_control_flag_update(self, data: Mapping[str, Any]) -> None:
-        self._control_flags = MediaControlFlags(data["_mcF"])
-        _LOGGER.debug("Updated media control flags to %s", self._control_flags)
-
-    def get_feature(self, feature_name: FeatureName) -> FeatureInfo:
-        """Return current state of a feature."""
-        if feature_name in MEDIA_CONTROL_MAP:
-            is_available = MEDIA_CONTROL_MAP[feature_name] & self._control_flags
-            return FeatureInfo(
-                FeatureState.Available if is_available else FeatureState.Unavailable
-            )
-
-        # Just assume these are available for now if the protocol is configured,
-        # we don't have any way to verify it anyways.
-        if feature_name in SUPPORTED_FEATURES:
-            return FeatureInfo(FeatureState.Available)
-
-        return FeatureInfo(FeatureState.Unavailable)
 
 
 class CompanionApps(Apps):
@@ -184,9 +165,9 @@ class CompanionApps(Apps):
         content = cast(dict, app_list["_c"])
         return [App(name, bundle_id) for bundle_id, name in content.items()]
 
-    async def launch_app(self, bundle_id: str) -> None:
-        """Launch an app based on bundle ID."""
-        await self.api.launch_app(bundle_id)
+    async def launch_app(self, bundle_id_or_url: str) -> None:
+        """Launch an app based on bundle ID or URL."""
+        await self.api.launch_app(bundle_id_or_url)
 
 
 class CompanionUserAccounts(UserAccounts):
@@ -217,7 +198,64 @@ class CompanionPower(Power):
     def __init__(self, api: CompanionAPI):
         """Initialize a new instance of CompanionPower."""
         super().__init__()
-        self.api = api
+        self.api: CompanionAPI = api
+        self.loop = asyncio.get_event_loop()
+        self._power_state: PowerState = PowerState.Unknown
+
+    @property
+    def supports_power_updates(self) -> bool:
+        """Return if power updates are supported or not."""
+        return self._power_state is not PowerState.Unknown
+
+    async def initialize(self) -> None:
+        """Initialize Power module."""
+        try:
+            system_status = await self.api.fetch_attention_state()
+
+            self._power_state = CompanionPower._system_status_to_power_state(
+                system_status
+            )
+
+            self.api.listen_to("SystemStatus", self._handle_system_status_update)
+            await self.api.subscribe_event("SystemStatus")
+
+            _LOGGER.debug("Initial power state is %s", self.power_state)
+        except Exception as ex:
+            _LOGGER.exception(
+                "Could not fetch SystemStatus, power_state will not work (%s)", ex
+            )
+
+    @property
+    def power_state(self) -> PowerState:
+        """Return device power state."""
+        return self._power_state
+
+    async def _handle_system_status_update(self, data: Mapping[str, Any]) -> None:
+        try:
+            old_state = self.power_state
+            self._power_state = CompanionPower._system_status_to_power_state(
+                SystemStatus(int(data["state"]))
+            )
+            self._update_power_state(old_state, self._power_state)
+        except Exception:
+            logging.exception("Got invalid SystemStatus: %s", data)
+
+    @staticmethod
+    def _system_status_to_power_state(system_status: SystemStatus) -> PowerState:
+        if system_status == SystemStatus.Asleep:
+            return PowerState.Off
+        if system_status in [
+            SystemStatus.Screensaver,
+            SystemStatus.Awake,
+            SystemStatus.Idle,
+        ]:
+            return PowerState.On
+        return PowerState.Unknown
+
+    def _update_power_state(self, old_state: PowerState, new_state: PowerState) -> None:
+        if new_state != old_state:
+            _LOGGER.debug("Power state changed from %s to %s", old_state, new_state)
+            self.loop.call_soon(self.listener.powerstate_update, old_state, new_state)
 
     async def turn_on(self, await_new_state: bool = False) -> None:
         """Turn device on."""
@@ -306,6 +344,10 @@ class CompanionRemoteControl(RemoteControl):
         """Select previous channel."""
         await self._press_button(HidCommand.ChannelDecrement)
 
+    async def screensaver(self) -> None:
+        """Activate screen saver."""
+        await self._press_button(HidCommand.Screensaver)
+
     async def _press_button(
         self, command: HidCommand, action: InputAction = InputAction.SingleTap
     ) -> None:
@@ -378,10 +420,31 @@ class CompanionAudio(Audio):
 class CompanionKeyboard(Keyboard):
     """Implementation of API for keyboard handling."""
 
-    def __init__(self, api: CompanionAPI):
+    def __init__(self, api: CompanionAPI, core: Core):
         """Initialize a new instance of CompanionKeyboard."""
         super().__init__()
         self.api = api
+        # _tiStarted will not be sent if session is started while already focused
+        self.api.listen_to("_tiStarted", self._handle_text_input)
+        self.api.listen_to("_tiStopped", self._handle_text_input)
+        # _tiStart is actually a command that we forward the response of,
+        self.api.listen_to("_tiStart", self._handle_text_input)
+        self.core = core
+        self._focus_state: KeyboardFocusState = KeyboardFocusState.Unknown
+
+    async def _handle_text_input(self, data: Mapping[str, Any]) -> None:
+        state = (
+            KeyboardFocusState.Focused
+            if "_tiD" in data
+            else KeyboardFocusState.Unfocused
+        )
+        self._focus_state = state
+        self.core.state_dispatcher.dispatch(UpdatedState.KeyboardFocus, state)
+
+    @property
+    def text_focus_state(self) -> KeyboardFocusState:
+        """Return keyboard focus state."""
+        return self._focus_state
 
     async def text_get(self) -> Optional[str]:
         """Get current virtual keyboard text."""
@@ -398,6 +461,43 @@ class CompanionKeyboard(Keyboard):
     async def text_set(self, text: str) -> None:
         """Replace text in virtual keyboard."""
         await self.api.text_input_command(text, clear_previous_input=True)
+
+
+class CompanionFeatures(Features):
+    """Implementation of supported feature functionality."""
+
+    def __init__(self, api: CompanionAPI, power: CompanionPower) -> None:
+        """Initialize a new CompanionFeatures instance."""
+        super().__init__()
+        api.listen_to("_iMC", self._handle_control_flag_update)
+        self._control_flags = MediaControlFlags.NoControls
+        self._power = power
+
+    async def _handle_control_flag_update(self, data: Mapping[str, Any]) -> None:
+        self._control_flags = MediaControlFlags(data["_mcF"])
+        _LOGGER.debug("Updated media control flags to %s", self._control_flags)
+
+    def get_feature(self, feature_name: FeatureName) -> FeatureInfo:
+        """Return current state of a feature."""
+        if feature_name in MEDIA_CONTROL_MAP:
+            is_available = MEDIA_CONTROL_MAP[feature_name] & self._control_flags
+            return FeatureInfo(
+                FeatureState.Available if is_available else FeatureState.Unavailable
+            )
+
+        if feature_name == FeatureName.PowerState:
+            return FeatureInfo(
+                FeatureState.Available
+                if self._power.supports_power_updates
+                else FeatureState.Unsupported
+            )
+
+        # Just assume these are available for now if the protocol is configured,
+        # we don't have any way to verify it anyways.
+        if feature_name in SUPPORTED_FEATURES:
+            return FeatureInfo(FeatureState.Available)
+
+        return FeatureInfo(FeatureState.Unavailable)
 
 
 def companion_service_handler(
@@ -457,19 +557,21 @@ def setup(core: Core) -> Generator[SetupData, None, None]:
         return None
 
     api = CompanionAPI(core)
+    power = CompanionPower(api)
 
     interfaces = {
         Apps: CompanionApps(api),
         UserAccounts: CompanionUserAccounts(api),
-        Features: CompanionFeatures(api),
-        Power: CompanionPower(api),
+        Features: CompanionFeatures(api, power),
+        Power: power,
         RemoteControl: CompanionRemoteControl(api),
         Audio: CompanionAudio(api, core),
-        Keyboard: CompanionKeyboard(api),
+        Keyboard: CompanionKeyboard(api, core),
     }
 
     async def _connect() -> bool:
         await api.connect()
+        await power.initialize()
         return True
 
     def _close() -> Set[asyncio.Task]:

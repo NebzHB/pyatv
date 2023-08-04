@@ -5,17 +5,18 @@ import inspect
 from ipaddress import IPv4Address
 import logging
 import math
-from typing import Any, Dict, Set
+from typing import Any, Dict, List, Set
 from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
 
-from pyatv import exceptions
+from pyatv import const, exceptions
 from pyatv.conf import AppleTV as AppleTVConf
 from pyatv.const import (
     DeviceState,
     FeatureName,
+    KeyboardFocusState,
     MediaType,
     OperatingSystem,
     PowerState,
@@ -33,7 +34,10 @@ from pyatv.interface import (
     FeatureInfo,
     Features,
     FeatureState,
+    Keyboard,
+    KeyboardListener,
     Metadata,
+    OutputDevice,
     Playing,
     Power,
     PowerListener,
@@ -43,6 +47,7 @@ from pyatv.interface import (
     Stream,
 )
 
+from tests.shared_helpers import SavingPowerListener
 from tests.utils import until
 
 _LOGGER = logging.getLogger(__name__)
@@ -133,6 +138,15 @@ class DummyAudio(Audio):
         self._volume = level
 
 
+class DummyKeyboard(Keyboard):
+    def __init__(self, focus_state: KeyboardFocusState) -> None:
+        self._focus_state = focus_state
+
+    @property
+    def focus_state(self) -> KeyboardFocusState:
+        return self._focus_state
+
+
 class DummyDeviceListener(DeviceListener):
     def __init__(self):
         self.lost_calls: int = 0
@@ -182,17 +196,6 @@ class SavingPushListener(PushListener):
         pass
 
 
-class SavingPowerListener(PowerListener):
-    def __init__(self):
-        self.last_update = None
-        self.all_updates = []
-
-    def powerstate_update(self, old_state: PowerState, new_state: PowerState):
-        """Device power state was updated."""
-        self.last_update = new_state
-        self.all_updates.append(new_state)
-
-
 class SavingAudioListener(AudioListener):
     def __init__(self):
         self.last_update = None
@@ -202,6 +205,25 @@ class SavingAudioListener(AudioListener):
         """Device volume was updated."""
         self.last_update = new_level
         self.all_updates.append(new_level)
+
+    def outputdevices_update(
+        self, old_devices: List[OutputDevice], new_devices: List[OutputDevice]
+    ):
+        """Output devices were updated."""
+        self.last_update = new_devices
+        self.all_updates.append(new_devices)
+
+
+class SavingKeyboardListener(KeyboardListener):
+    def __init__(self):
+        self.last_update = None
+        self.all_updates = []
+
+    def focusstate_update(
+        self, old_state: const.KeyboardFocusState, new_state: const.KeyboardFocusState
+    ):
+        self.last_update = new_state
+        self.all_updates.append(new_state)
 
 
 @pytest.fixture(name="register_interface")
@@ -537,6 +559,7 @@ def register_basic_interfaces(reg_interface, protocol: Protocol) -> None:
         FeatureName.PlayUrl, DummyFeatures(FeatureName.PlayUrl), protocol
     )
     sdg.interfaces[Audio] = DummyAudio(0.0)
+    sdg.interfaces[Keyboard] = DummyKeyboard(KeyboardFocusState.Unfocused)
     sdg.interfaces[Stream] = DummyStream()
     return sdg
 
@@ -700,37 +723,6 @@ async def dispatch_device_state(mrp_state_dispatcher, state, protocol=Protocol.M
     await event.wait()
 
 
-async def test_power_state_respect_playing_state(mrp_state_dispatcher, power_setup):
-    assert power_setup.power_state == PowerState.Off
-
-    # Trigger something to play (but keep power state off) changes it to On
-    await dispatch_device_state(mrp_state_dispatcher, DeviceState.Playing)
-    assert power_setup.listener.last_update == PowerState.On
-    assert power_setup.power_state == PowerState.On
-
-    # Trigger back to idle shall give power state Off again
-    await dispatch_device_state(mrp_state_dispatcher, DeviceState.Idle)
-    assert power_setup.listener.last_update == PowerState.Off
-    assert power_setup.power_state == PowerState.Off
-
-
-async def test_power_state_defaults_to_derived_power_state_from_off(
-    mrp_state_dispatcher, power_setup, power_instance
-):
-    assert power_setup.power_state == PowerState.Off
-
-    # Trigger something to play (but keep power state off) changes it to On
-    await dispatch_device_state(mrp_state_dispatcher, DeviceState.Playing)
-    assert power_setup.listener.last_update == PowerState.On
-
-    # Change derived power state to On
-    power_instance.current_state = PowerState.On
-
-    # Trigger back to idle shall give power state On as derived state is On
-    await dispatch_device_state(mrp_state_dispatcher, DeviceState.Idle)
-    assert power_setup.power_state == PowerState.On
-
-
 async def test_power_state_defaults_to_derived_power_state_from_on(
     mrp_state_dispatcher, power_setup, power_instance
 ):
@@ -744,41 +736,6 @@ async def test_power_state_defaults_to_derived_power_state_from_on(
     await dispatch_device_state(mrp_state_dispatcher, DeviceState.Idle)
     assert power_setup.power_state == PowerState.On
     assert power_setup.listener.last_update is None
-
-
-async def test_power_play_state_only_from_main_protocol(
-    mrp_state_dispatcher, dmap_state_dispatcher, power_setup
-):
-    assert power_setup.power_state == PowerState.Off
-
-    # The initial Playing (DMAP) shall be ignored so we should only get On state
-    # since duplicates are not propagated
-    await dispatch_device_state(
-        dmap_state_dispatcher, DeviceState.Playing, protocol=Protocol.DMAP
-    )
-    assert power_setup.listener.last_update is None
-    await dispatch_device_state(
-        mrp_state_dispatcher, DeviceState.Idle, protocol=Protocol.MRP
-    )
-    assert power_setup.listener.last_update is None
-    await dispatch_device_state(
-        mrp_state_dispatcher, DeviceState.Playing, protocol=Protocol.MRP
-    )
-    assert power_setup.listener.last_update == PowerState.On
-
-
-async def test_power_play_state_no_dispatcher_duplicates(
-    mrp_state_dispatcher, power_setup
-):
-    assert power_setup.power_state == PowerState.Off
-
-    # Dispatch two "On" and one "Off". On shall only be registered once.
-    await dispatch_device_state(mrp_state_dispatcher, DeviceState.Playing)
-    await dispatch_device_state(mrp_state_dispatcher, DeviceState.Playing)
-    await dispatch_device_state(mrp_state_dispatcher, DeviceState.Idle)
-    assert power_setup.listener.last_update == PowerState.Off
-
-    assert len(power_setup.listener.all_updates) == 2
 
 
 async def test_power_play_state_no_listener_duplicates(
@@ -840,18 +797,125 @@ async def dispatch_volume_update(mrp_state_dispatcher, level, protocol=Protocol.
     await event.wait()
 
 
-async def test_audio_listener_updates(mrp_state_dispatcher, audio_setup):
+async def dispatch_output_devices_update(
+    mrp_state_dispatcher, devices, protocol=Protocol.MRP
+):
+    event = asyncio.Event()
+
+    # Add a listener last in the last and make it set an asyncio.Event. That way we
+    # can synchronize and know that all other listeners have been called.
+    mrp_state_dispatcher.listen_to(
+        UpdatedState.OutputDevices, lambda message: event.set()
+    )
+    mrp_state_dispatcher.dispatch(UpdatedState.OutputDevices, devices)
+
+    await event.wait()
+
+
+async def test_audio_listener_volume_updates(mrp_state_dispatcher, audio_setup):
     await dispatch_volume_update(mrp_state_dispatcher, 10.0)
     assert audio_setup.listener.last_update == 10.0
     await dispatch_volume_update(mrp_state_dispatcher, 20.0)
     assert audio_setup.listener.last_update == 20.0
 
 
-async def test_audio_no_listener_duplicates(mrp_state_dispatcher, audio_setup):
+async def test_audio_no_listener_volume_duplicates(mrp_state_dispatcher, audio_setup):
     await dispatch_volume_update(mrp_state_dispatcher, 10.0)
     await dispatch_volume_update(mrp_state_dispatcher, 10.0)
     assert len(audio_setup.listener.all_updates) == 1
     assert audio_setup.listener.last_update == 10.0
+
+
+async def test_audio_listener_output_devices_updates(mrp_state_dispatcher, audio_setup):
+    await dispatch_output_devices_update(
+        mrp_state_dispatcher,
+        [OutputDevice("Apple TV", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")],
+    )
+    assert audio_setup.listener.last_update == [
+        OutputDevice("Apple TV", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+    ]
+    await dispatch_output_devices_update(
+        mrp_state_dispatcher,
+        [
+            OutputDevice("Apple TV", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"),
+            OutputDevice("HomePod", "FFFFFFFF-GGGG-HHHH-IIII-JJJJJJJJJJJJ"),
+        ],
+    )
+    assert audio_setup.listener.last_update == [
+        OutputDevice("Apple TV", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"),
+        OutputDevice("HomePod", "FFFFFFFF-GGGG-HHHH-IIII-JJJJJJJJJJJJ"),
+    ]
+
+
+async def test_audio_no_listener_output_devices_duplicates(
+    mrp_state_dispatcher, audio_setup
+):
+    await dispatch_output_devices_update(
+        mrp_state_dispatcher,
+        [OutputDevice("Apple TV", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")],
+    )
+    await dispatch_output_devices_update(
+        mrp_state_dispatcher,
+        [OutputDevice("Apple TV", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")],
+    )
+    assert len(audio_setup.listener.all_updates) == 1
+    assert audio_setup.listener.last_update == [
+        OutputDevice("Apple TV", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+    ]
+
+
+# KEYBOARD RELATED TESTS
+
+
+@pytest_asyncio.fixture(name="keyboard_setup")
+async def keyboard_setup_fixture(facade_dummy, register_interface):
+    listener = SavingKeyboardListener()
+
+    register_basic_interfaces(register_interface, Protocol.Companion)
+
+    await facade_dummy.connect()
+    facade_dummy.keyboard.listener = listener
+
+    yield facade_dummy.keyboard
+
+
+async def dispatch_focus_state_update(
+    companion_state_dispatcher, state, protocol=Protocol.Companion
+):
+    event = asyncio.Event()
+
+    # Add a listener last in the last and make it set an asyncio.Event. That way we
+    # can synchronize and know that all other listeners have been called.
+    companion_state_dispatcher.listen_to(
+        UpdatedState.KeyboardFocus, lambda message: event.set()
+    )
+    companion_state_dispatcher.dispatch(UpdatedState.KeyboardFocus, state)
+
+    await event.wait()
+
+
+async def test_keyboard_listener_updates(companion_state_dispatcher, keyboard_setup):
+    await dispatch_focus_state_update(
+        companion_state_dispatcher, KeyboardFocusState.Focused
+    )
+    assert keyboard_setup.listener.last_update == KeyboardFocusState.Focused
+    await dispatch_focus_state_update(
+        companion_state_dispatcher, KeyboardFocusState.Unfocused
+    )
+    assert keyboard_setup.listener.last_update == KeyboardFocusState.Unfocused
+
+
+async def test_keyboard_no_listener_duplicates(
+    companion_state_dispatcher, keyboard_setup
+):
+    await dispatch_focus_state_update(
+        companion_state_dispatcher, KeyboardFocusState.Focused
+    )
+    await dispatch_focus_state_update(
+        companion_state_dispatcher, KeyboardFocusState.Focused
+    )
+    assert len(keyboard_setup.listener.all_updates) == 1
+    assert keyboard_setup.listener.last_update == KeyboardFocusState.Focused
 
 
 # GUARD CALLS AFTER CLOSE

@@ -112,7 +112,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Download pre-built packages
-        uses: actions/download-artifact@v23
+        uses: actions/download-artifact@v3
         with:
           name: packages
           path: dist
@@ -137,8 +137,8 @@ jobs:
               if name is not None:
                 notes += line
 
-          print(f"name={name} >> " + os.environ["GITHUB_OUTPUT"])
-          print(f"version={version} >> " + os.environ["GITHUB_OUTPUT"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.writelines([f"name={name}\n", f"version={version}\n"])
 
           with open("notes.md", "w", encoding="utf-8") as handle:
             handle.write(notes)
@@ -154,7 +154,7 @@ jobs:
           name: ${{ steps.info.outputs.name }}
 
       - name: Publish distribution to PyPI
-        uses: pypa/gh-action-pypi-publish@v1
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           skip_existing: true

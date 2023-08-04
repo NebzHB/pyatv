@@ -3,16 +3,14 @@
 import asyncio
 import io
 import logging
-import math
-from os import path
 from typing import Any, Dict, Generator, Mapping, Optional, Set, Tuple, Union, cast
 
 from pyatv import const, exceptions
-from pyatv.auth.hap_pairing import AuthenticationType, parse_credentials
 from pyatv.const import (
     DeviceModel,
     FeatureName,
     FeatureState,
+    OperatingSystem,
     PairingRequirement,
     Protocol,
 )
@@ -46,31 +44,30 @@ from pyatv.interface import (
     RemoteControl,
     Stream,
 )
-from pyatv.protocols.airplay import service_info as airplay_service_info
-from pyatv.protocols.airplay.pairing import AirPlayPairingHandler
-from pyatv.protocols.airplay.utils import AirPlayFlags, parse_features
-from pyatv.protocols.raop.audio_source import AudioSource, open_source
-from pyatv.protocols.raop.raop import (
-    PlaybackInfo,
-    RaopClient,
-    RaopContext,
-    RaopListener,
+from pyatv.protocols.airplay.auth import extract_credentials
+from pyatv.protocols.airplay.pairing import (
+    AirPlayPairingHandler,
+    get_preferred_auth_type,
 )
-from pyatv.support import map_range
+from pyatv.protocols.airplay.utils import (
+    AirPlayMajorVersion,
+    dbfs_to_pct,
+    get_protocol_version,
+    pct_to_dbfs,
+    update_service_details,
+)
+from pyatv.protocols.raop.audio_source import AudioSource, open_source
+from pyatv.protocols.raop.protocols import StreamContext, airplayv1, airplayv2
+from pyatv.protocols.raop.stream_client import PlaybackInfo, RaopListener, StreamClient
 from pyatv.support.collections import dict_merge
-from pyatv.support.device_info import lookup_model
+from pyatv.support.device_info import lookup_model, lookup_os
 from pyatv.support.http import ClientSessionManager, HttpConnection, http_connect
-from pyatv.support.metadata import EMPTY_METADATA, MediaMetadata, get_metadata
+from pyatv.support.metadata import EMPTY_METADATA, MediaMetadata, merge_into
 from pyatv.support.rtsp import RtspSession
 
 _LOGGER = logging.getLogger(__name__)
 
 INITIAL_VOLUME = 33.0  # Percent
-
-DBFS_MIN = -30.0
-DBFS_MAX = 0.0
-PERCENTAGE_MIN = 0.0
-PERCENTAGE_MAX = 100.0
 
 
 class RaopPushUpdater(AbstractPushUpdater):
@@ -120,20 +117,20 @@ class RaopPlaybackManager:
         self._is_acquired: bool = False
         self._address: str = address
         self._port: int = port
-        self._context: RaopContext = RaopContext()
+        self._context: StreamContext = StreamContext()
         self._connection: Optional[HttpConnection] = None
         self._rtsp: Optional[RtspSession] = None
-        self._raop: Optional[RaopClient] = None
+        self._stream_client: Optional[StreamClient] = None
 
     @property
-    def context(self) -> RaopContext:
+    def context(self) -> StreamContext:
         """Return RTSP context if a session is active."""
         return self._context
 
     @property
-    def raop(self) -> Optional[RaopClient]:
-        """Return RAOP client if a session is active."""
-        return self._raop
+    def stream_client(self) -> Optional[StreamClient]:
+        """Return stream client if a session is active."""
+        return self._stream_client
 
     def acquire(self) -> None:
         """Acquire playback manager for playback."""
@@ -142,23 +139,36 @@ class RaopPlaybackManager:
 
         self._is_acquired = True
 
-    async def setup(self) -> Tuple[RaopClient, RtspSession, RaopContext]:
+    async def setup(self, service: BaseService) -> Tuple[StreamClient, StreamContext]:
         """Set up a session or return active if it exists."""
-        if self._raop and self._rtsp and self._context:
-            return self._raop, self._rtsp, self._context
+        if self._stream_client and self._rtsp and self._context:
+            return self._stream_client, self._context
 
         self._connection = await http_connect(self._address, self._port)
         self._rtsp = RtspSession(self._connection)
-        self._raop = RaopClient(self._rtsp, self._context)
-        return self._raop, self._rtsp, self._context
+
+        protocol_version = get_protocol_version(service)
+        _LOGGER.debug("Using AirPlay version %s", protocol_version)
+
+        protocol_class = (
+            airplayv1.AirPlayV1
+            if protocol_version == AirPlayMajorVersion.AirPlayV1
+            else airplayv2.AirPlayV2
+        )
+
+        self._stream_client = StreamClient(
+            self._rtsp, self._context, protocol_class(self._context, self._rtsp)
+        )
+        return self._stream_client, self._context
 
     async def teardown(self) -> None:
         """Tear down and disconnect current session."""
-        if self._raop:
-            self._raop.close()
+        if self._stream_client:
+            self._stream_client.close()
         if self._connection:
+            self._connection.close()
             self._connection = None
-        self._raop = None
+        self._stream_client = None
         self._context.reset()
         self._rtsp = None
         self._connection = None
@@ -229,7 +239,7 @@ class RaopFeatures(Features):
             return FeatureInfo(FeatureState.Available)
 
         if feature_name in [FeatureName.Stop, FeatureName.Pause]:
-            is_streaming = self.playback_manager.raop is not None
+            is_streaming = self.playback_manager.stream_client is not None
             return FeatureInfo(
                 FeatureState.Available if is_streaming else FeatureState.Unavailable
             )
@@ -263,7 +273,7 @@ class RaopAudio(Audio):
         volume = cast(float, message.value)
 
         _LOGGER.debug("Protocol %s changed volume to %f", message.protocol.name, volume)
-        self.playback_manager.context.volume = RaopAudio._pct_to_dbfs(volume)
+        self.playback_manager.context.volume = pct_to_dbfs(volume)
 
     @property
     def has_changed_volume(self) -> bool:
@@ -277,18 +287,12 @@ class RaopAudio(Audio):
         if vol is None:
             return INITIAL_VOLUME
 
-        # AirPlay uses -144.0 as "muted", but we treat everything below -30.0 as
-        # muted to be a bit defensive
-        if vol < DBFS_MIN:
-            return PERCENTAGE_MIN
-
-        # Map dBFS to percentage
-        return map_range(vol, DBFS_MIN, DBFS_MAX, PERCENTAGE_MIN, PERCENTAGE_MAX)
+        return dbfs_to_pct(vol)
 
     async def set_volume(self, level: float) -> None:
         """Change current volume level."""
-        raop = self.playback_manager.raop
-        dbfs_volume = RaopAudio._pct_to_dbfs(level)
+        raop = self.playback_manager.stream_client
+        dbfs_volume = pct_to_dbfs(level)
 
         if raop:
             await raop.set_volume(dbfs_volume)
@@ -304,15 +308,6 @@ class RaopAudio(Audio):
     async def volume_down(self) -> None:
         """Decrease volume by one step."""
         await self.set_volume(max(self.volume - 5.0, 0.0))
-
-    @staticmethod
-    def _pct_to_dbfs(level: float) -> float:
-        # AirPlay uses -144.0 as muted volume, so re-map 0.0 to that
-        if math.isclose(level, 0.0):
-            return -144.0
-
-        # Map percentage to dBFS
-        return map_range(level, PERCENTAGE_MIN, PERCENTAGE_MAX, DBFS_MIN, DBFS_MAX)
 
 
 class RaopStream(Stream):
@@ -333,9 +328,10 @@ class RaopStream(Stream):
 
     async def stream_file(
         self,
-        file: Union[str, io.BufferedReader, asyncio.streams.StreamReader],
+        file: Union[str, io.BufferedIOBase, asyncio.streams.StreamReader],
         /,
         metadata: Optional[MediaMetadata] = None,
+        override_missing_metadata: bool = False,
         **kwargs
     ) -> None:
         """Stream local or remote file to device.
@@ -350,15 +346,12 @@ class RaopStream(Stream):
             Audio, Metadata, PushUpdater, RemoteControl
         )
         try:
-            client, _, context = await self.playback_manager.setup()
-            client.credentials = parse_credentials(self.core.service.credentials)
-            client.password = self.core.service.password
+            client, context = await self.playback_manager.setup(self.core.service)
+            context.credentials = extract_credentials(self.core.service)
+            context.password = self.core.service.password
 
             client.listener = self.listener
             await client.initialize(self.core.service.properties)
-
-            # If metadata was provided, use that. Otherwise try to load from source.
-            file_metadata = metadata or await RaopStream.get_metadata(file)
 
             # After initialize has been called, all the audio properties will be
             # initialized and can be used in the miniaudio wrapper
@@ -369,9 +362,20 @@ class RaopStream(Stream):
                 context.bytes_per_channel,
             )
 
+            # If no custom metadata is provided, try to load from source. If it is
+            # provided, check if metadata should be overridden or not.
+            if metadata is None:
+                file_metadata = await audio_file.get_metadata()
+            elif override_missing_metadata:
+                file_metadata = await audio_file.get_metadata()
+                file_metadata = merge_into(file_metadata, metadata)
+            else:
+                file_metadata = metadata
+
             # If the user didn't change volume level prior to streaming, try to extract
             # volume level from device (if supported). Otherwise set the default level
             # in pyatv.
+            volume = None
             if not self.audio.has_changed_volume and "initialVolume" in client.info:
                 initial_volume = client.info["initialVolume"]
                 if not isinstance(initial_volume, float):
@@ -381,32 +385,20 @@ class RaopStream(Stream):
                     )
                 context.volume = initial_volume
             else:
-                await self.audio.set_volume(self.audio.volume)
+                # Try to set volume. If it fails, defer to setting it once
+                # streaming has started.
+                try:
+                    await self.audio.set_volume(self.audio.volume)
+                except Exception as ex:
+                    _LOGGER.debug("Failed to set volume (%s), delaying call", ex)
+                    volume = self.audio.volume
 
-            await client.send_audio(audio_file, file_metadata)
+            await client.send_audio(audio_file, file_metadata, volume=volume)
         finally:
             takeover_release()
             if audio_file:
                 await audio_file.close()
             await self.playback_manager.teardown()
-
-    @staticmethod
-    async def get_metadata(
-        file: Union[str, io.BufferedReader, asyncio.streams.StreamReader]
-    ) -> MediaMetadata:
-        """Extract metadata from input file."""
-        try:
-            # Source must support seeking to read metadata (or point to file)
-            if (isinstance(file, io.BufferedReader) and file.seekable()) or (
-                isinstance(file, str) and path.exists(file)
-            ):
-                return await get_metadata(file)
-
-            _LOGGER.debug("Seeking not supported by source, not loading metadata")
-        except Exception as ex:
-            _LOGGER.exception("Failed to extract metadata from %s: %s", file, ex)
-
-        return EMPTY_METADATA
 
 
 class RaopRemoteControl(RemoteControl):
@@ -421,13 +413,13 @@ class RaopRemoteControl(RemoteControl):
     # gives a better experience in Home Assistant.
     async def pause(self) -> None:
         """Press key pause."""
-        if self.playback_manager.raop:
-            self.playback_manager.raop.stop()
+        if self.playback_manager.stream_client:
+            self.playback_manager.stream_client.stop()
 
     async def stop(self) -> None:
         """Press key stop."""
-        if self.playback_manager.raop:
-            self.playback_manager.raop.stop()
+        if self.playback_manager.stream_client:
+            self.playback_manager.stream_client.stop()
 
     async def volume_up(self) -> None:
         """Press key volume up."""
@@ -477,6 +469,9 @@ def device_info(service_type: str, properties: Mapping[str, Any]) -> Dict[str, A
         devinfo[DeviceInfo.RAW_MODEL] = properties["am"]
         if model != DeviceModel.Unknown:
             devinfo[DeviceInfo.MODEL] = model
+        operating_system = lookup_os(properties["am"])
+        if operating_system != OperatingSystem.Unknown:
+            devinfo[DeviceInfo.OPERATING_SYSTEM] = operating_system
     if "ov" in properties:
         devinfo[DeviceInfo.VERSION] = properties["ov"]
 
@@ -504,9 +499,13 @@ async def service_info(
         # Access control might say that pairing is not possible, e.g. only devices
         # belonging to the same home (not supported by pyatv)
         service.pairing = PairingRequirement.Disabled
+    elif airplay_service and airplay_service.properties.get("act", "0") == "2":
+        # Similarly to ACL, we can have an access control type we do not support,
+        # e.g. "2" which corresponds to "Current User". So we need to filter that.
+        service.pairing = PairingRequirement.Unsupported
     else:
         # Same behavior as for AirPlay expected, so re-using that here
-        await airplay_service_info(service, devinfo, services)
+        update_service_details(service)
 
 
 def setup(  # pylint: disable=too-many-locals
@@ -596,15 +595,6 @@ def pair(
     **kwargs
 ) -> PairingHandler:
     """Return pairing handler for protocol."""
-    features = service.properties.get("ft")
-    if not features:
-        # TODO: Better handle cases like these (provide API)
-        raise exceptions.NotSupportedError("pairing not required")
-
-    flags = parse_features(features)
-    if AirPlayFlags.SupportsLegacyPairing not in flags:
-        raise exceptions.NotSupportedError("legacy pairing not supported")
-
     return AirPlayPairingHandler(
-        config, service, session_manager, AuthenticationType.Legacy, **kwargs
+        config, service, session_manager, get_preferred_auth_type(service), **kwargs
     )
