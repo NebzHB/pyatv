@@ -16,7 +16,6 @@ from pyatv.core.scan import (
 )
 from pyatv.helpers import get_unique_id
 from pyatv.interface import (
-    BaseConfig,
     BaseService,
     DeviceInfo,
     FeatureInfo,
@@ -30,10 +29,7 @@ from pyatv.protocols import mrp
 from pyatv.protocols.airplay.ap2_session import AP2Session
 from pyatv.protocols.airplay.auth import extract_credentials
 from pyatv.protocols.airplay.mrp_connection import AirPlayMrpConnection
-from pyatv.protocols.airplay.pairing import (
-    AirPlayPairingHandler,
-    get_preferred_auth_type,
-)
+from pyatv.protocols.airplay.pairing import AirPlayPairingHandler
 from pyatv.protocols.airplay.player import AirPlayPlayer
 from pyatv.protocols.airplay.utils import (
     AirPlayFlags,
@@ -52,12 +48,7 @@ from pyatv.protocols.raop.protocols import (
 )
 from pyatv.support import net
 from pyatv.support.device_info import lookup_model, lookup_os
-from pyatv.support.http import (
-    ClientSessionManager,
-    HttpConnection,
-    StaticFileWebServer,
-    http_connect,
-)
+from pyatv.support.http import HttpConnection, StaticFileWebServer, http_connect
 from pyatv.support.rtsp import RtspSession
 
 _LOGGER = logging.getLogger(__name__)
@@ -138,7 +129,7 @@ class AirPlayStream(Stream):  # pylint: disable=too-few-public-methods
                 str(self.config.address), self.service.port
             )
             rtsp = RtspSession(self._connection)
-            stream_protocol = AirPlayStream.create_airplay_protocol(self.service, rtsp)
+            stream_protocol = self.create_airplay_protocol(self.service, rtsp)
             player = AirPlayPlayer(rtsp, stream_protocol)
             position = int(kwargs.get("position", 0))
             self._play_task = asyncio.ensure_future(player.play_url(url, position))
@@ -153,9 +144,8 @@ class AirPlayStream(Stream):  # pylint: disable=too-few-public-methods
                 await server.close()
 
     # Should be included in a "common" module with shared AirPlay code
-    @staticmethod
     def create_airplay_protocol(
-        service: BaseService, rtsp: RtspSession
+        self, service: BaseService, rtsp: RtspSession
     ) -> StreamProtocol:
         """Create AirPlay protocol implementation based on supported version."""
         if service.protocol != Protocol.AirPlay:
@@ -164,7 +154,12 @@ class AirPlayStream(Stream):  # pylint: disable=too-few-public-methods
         context = StreamContext()
         context.credentials = parse_credentials(service.credentials)
 
-        if get_protocol_version(service) == AirPlayMajorVersion.AirPlayV1:
+        if (
+            get_protocol_version(
+                service, self.core.settings.protocols.raop.protocol_version
+            )
+            == AirPlayMajorVersion.AirPlayV1
+        ):
             return airplayv1.AirPlayV1(context, rtsp)
         return airplayv2.AirPlayV2(context, rtsp)
 
@@ -297,6 +292,7 @@ def setup(  # pylint: disable=too-many-locals
             core.loop,
             core.config,
             raop_service,
+            core.settings,
             core.device_listener,
             core.session_manager,
             core.takeover,
@@ -314,7 +310,9 @@ def setup(  # pylint: disable=too-many-locals
     else:
         _LOGGER.debug("Remote control channel is supported")
 
-        session = AP2Session(str(core.config.address), core.service.port, credentials)
+        session = AP2Session(
+            str(core.config.address), core.service.port, credentials, core.settings.info
+        )
 
         # A protocol requires its corresponding service to function, so add a
         # dummy one if we don't have one yet
@@ -335,6 +333,7 @@ def setup(  # pylint: disable=too-many-locals
                 core.loop,
                 core.config,
                 mrp_service,
+                core.settings,
                 core.device_listener,
                 core.session_manager,
                 core.takeover,
@@ -379,14 +378,12 @@ def setup(  # pylint: disable=too-many-locals
         )
 
 
-def pair(
-    config: BaseConfig,
-    service: BaseService,
-    session_manager: ClientSessionManager,
-    loop: asyncio.AbstractEventLoop,
-    **kwargs
-) -> PairingHandler:
+def pair(core: Core, **kwargs) -> PairingHandler:
     """Return pairing handler for protocol."""
     return AirPlayPairingHandler(
-        config, service, session_manager, get_preferred_auth_type(service), **kwargs
+        core,
+        get_protocol_version(
+            core.service, core.settings.protocols.raop.protocol_version
+        ),
+        **kwargs,
     )

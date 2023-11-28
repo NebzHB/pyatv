@@ -1,5 +1,320 @@
 # CHANGES
 
+## 0.14.4 Patty (2023-10-27)
+
+This release contains a fix when running with python 3.11
+or later, mainly when calling atvscript. Thanks @maxileith!
+
+**Changes:**
+
+*Other:*
+
+```
+cc0e4a2 Wrap coroutines passed to asyncio.wait with create_tasks asyncio.wait does not support passing coroutines since python 3.11
+d8c6b4d cq: New attempt with token
+e611672 cq: New token for auto-merge
+b47ddbf cq: Update auto-merge token
+e7f880a cq: Try to fix auto-merge
+```
+
+**All changes:**
+
+```
+cc0e4a2 Wrap coroutines passed to asyncio.wait with create_tasks asyncio.wait does not support passing coroutines since python 3.11
+d8c6b4d cq: New attempt with token
+e611672 cq: New token for auto-merge
+b47ddbf cq: Update auto-merge token
+e7f880a cq: Try to fix auto-merge
+```
+
+## 0.14.3 Otto (2023-10-23)
+
+Due to Home Assistant being stuck at pydantic v1 at the moment,
+I have now changed to use pydantic v1 with the compatibility
+version bundled in v2. This bascially means that pydantic v1 is
+used internally, even when v2 is installed. This is temporary
+until Home Assistant can bump up to pydantic v2. I have also
+removed dependency on pydantic-extra-types (only MacAddress was
+used) as it has no v1 compatible version. Same goes for
+pydantic-settings, which provides no functionality currently.
+
+**Changes:**
+
+*Other:*
+
+```
+86a4a91 storage: Use pydantic v1 compatibility
+1a8c05a storage: Remove usage of pydantic-settings
+d95ab81 storage: Remove need for pydantic-extra-types
+b671e21 cq: Another attempt to fix update_type
+e50fb7b cq: Specify depdency_type to auto-merge
+bde83fa cq: Update auto-merge token
+0c4a873 cq: Auto merge dependabot
+3e503dc cq: Automatic code coverage
+```
+
+**All changes:**
+
+```
+86a4a91 storage: Use pydantic v1 compatibility
+1a8c05a storage: Remove usage of pydantic-settings
+d95ab81 storage: Remove need for pydantic-extra-types
+b671e21 cq: Another attempt to fix update_type
+e50fb7b cq: Specify depdency_type to auto-merge
+bde83fa cq: Update auto-merge token
+0c4a873 cq: Auto merge dependabot
+3e503dc cq: Automatic code coverage
+```
+
+## 0.14.2 Ned (2023-10-17)
+
+Hi-Diddily-Ho, time for some minor bug fixes:
+
+* Do not re-raise TimeoutError as AuthenticationError when
+  connecting (Companion and MRP were affected by this). This makes
+  more sense and also fixes issues with the Apple TV integration
+  in Home Assistant requiring reconfiguration way too often.
+* @bdraco made some zeroconf adjustments to deal with bad behavior
+  in some Zeroconf stacks (mainly seen with AirPort Express).
+
+**Changes:**
+
+*Other:*
+
+```
+bde4850 deps: Update protobuf version in base_versions
+d33a94e api: Use error_handler when connecting
+c11c2a9 Filter out invalid addreses from zeroconf
+3c1fc13 Filter out invalid addreses from zeroconf
+ef17195 add some missing return types on public interfaces
+bed2426 add py.typed to mark pyatv as PEP-561 compliant
+```
+
+**All changes:**
+
+```
+bde4850 deps: Update protobuf version in base_versions
+10835e1 build(deps): Bump mypy-protobuf from 3.4.0 to 3.5.0 in /requirements
+a29ceb5 build(deps): Bump pyfakefs from 5.2.4 to 5.3.0 in /requirements
+d33a94e api: Use error_handler when connecting
+e9896fa Fix spelling errors
+98348aa build(deps): Bump codespell from 2.2.5 to 2.2.6 in /requirements
+b90deec naming
+ec1191a naming
+c11c2a9 Filter out invalid addreses from zeroconf
+3c1fc13 Filter out invalid addreses from zeroconf
+2412932 build(deps): Bump zeroconf from 0.112.0 to 0.118.0 in /requirements
+ab54ef3 build(deps): Bump pytest-timeout from 2.1.0 to 2.2.0 in /requirements
+62fd75a build(deps): Bump pylint from 2.17.5 to 3.0.1 in /requirements
+486e110 build(deps): Bump aiohttp from 3.8.5 to 3.8.6 in /requirements
+835142e build(deps): Bump protobuf from 4.24.3 to 4.24.4 in /requirements
+344fac7 build(deps): Bump deepdiff from 6.5.0 to 6.6.0 in /requirements
+85b099a build(deps): Bump python from 3.11.5-alpine to 3.12.0-alpine
+57bfaf5 build(deps): Bump cryptography from 41.0.3 to 41.0.4 in /requirements
+ef17195 add some missing return types on public interfaces
+bed2426 add py.typed to mark pyatv as PEP-561 compliant
+```
+
+## 0.14.1 Marge (2023-09-27)
+
+Minor release coming up today:
+
+* Fix Companion credentials not being saved when pairing
+* Actually use storage in the wizard (atvremote)
+* Add FileStorage.default_storage() to get the same storage
+  as used by scripts shipped with pyatv (i.e. you can share
+  credentials with your applications)
+* Add setting to force AirPlay version to use with RAOP
+* Add settings for RAOP control and timing ports
+
+**Changes:**
+
+*Protocol: Companion:*
+
+```
+e551954 companion: Fix credentials not saved
+```
+
+*Protocol: RAOP:*
+
+```
+c17f304 raop: Add protocol_version setting
+391be8b raop: Add settings for timing and control ports
+```
+
+*Script: atvremote:*
+
+```
+fa2f7b1 atvremote: Fix storage passing to pair
+```
+
+*Other:*
+
+```
+fd7135b tests: Add test for atvremote wizard
+e8a812d tests: Migrate scripts tests to pytest
+6704359 docs: Add minor change template
+74d2de5 storage: Add FileStorage.default_storage
+621adff docs: Some updates to README.md
+f13a353 docs: More link fixes
+d394708 storage: Use pydantic-extra-types for MAC
+```
+
+**All changes:**
+
+```
+e551954 companion: Fix credentials not saved
+1c4b4d3 build(deps): Bump types-protobuf in /requirements
+91fdc71 build(deps): Bump zeroconf from 0.108.0 to 0.112.0 in /requirements
+c17f304 raop: Add protocol_version setting
+fd7135b tests: Add test for atvremote wizard
+e8a812d tests: Migrate scripts tests to pytest
+fa2f7b1 atvremote: Fix storage passing to pair
+95d7d54 build(deps): Bump deepdiff from 6.4.1 to 6.5.0 in /requirements
+6704359 docs: Add minor change template
+712f105 build(deps): Bump zeroconf from 0.97.0 to 0.108.0 in /requirements
+46d50f0 build(deps): Bump black from 23.7.0 to 23.9.1 in /requirements
+391be8b raop: Add settings for timing and control ports
+2808c5d build(deps): Bump pytest from 7.4.1 to 7.4.2 in /requirements
+d426ae8 build(deps): Bump protobuf from 4.24.2 to 4.24.3 in /requirements
+01e4cc0 build(deps): Bump pytest-aiohttp from 1.0.4 to 1.0.5 in /requirements
+74d2de5 storage: Add FileStorage.default_storage
+621adff docs: Some updates to README.md
+f13a353 docs: More link fixes
+d394708 storage: Use pydantic-extra-types for MAC
+```
+
+## 0.14.0 Lisa (2023-09-04)
+
+Finally time for a new release and this (despite the few number
+of commits) is a big one: this release introduces the storage API!
+in reality, the storage API comes with two distinct features:
+
+* Storing and loading of credentials and passwords
+* Support for generic settings
+
+The first one is pretty obvious and also the biggest one here.
+From now on, pyatv will automatically save credentials to a file
+when pairing and automatically load them again without the need
+of manually specifying them (the same applies to passwords as
+well). This is true for built in scripts like `atvremote` and
+`atvscript`. You need to add a few lines of code to support it
+within your applications.
+
+The API is generic in the sense that you can implement your own
+storage if you like. Perhaps you want to store your credentials in
+Dropbox or a Google Document? That is possible by writing a custom
+storage module. This release ships with a `FileStorage` module
+that stores settings in a local file using JSON as storage format.
+There's also a `MemoryStorage` module that just keeps settings in
+memory. The latter one is used by default if no storage is provided
+as a means of backwards compatibility.
+
+Moving on to generic settings then. Ways to alter the behavior of
+pyatv has been requested in several ways throughout the years. Be
+it specifying port nunbers or changing the way a protocol behaves.
+There has not been any way of implementing such settings until now.
+Biggest reason for it was because I wanted to implement storage
+first to see how things would fit together. I guess the benefit is
+that we now got both features at once.
+
+As a start, only a few metadata fields like MAC address and
+operating system version can be changed. I will add more settings
+over time and you can request additional settings by opening
+issues. As new settings adds extra maintenance burden (e.g. more
+tests), I will be a bit picky though.
+
+I have fixed a small detail in the documentation as well. The
+value of members in enums are now shown. Only the name was shown
+before. The same change also applies to the pydantic models used
+for settings, so you can see default values for all settings
+directly in the API reference.
+
+Oh, and one more thing... A wizard moved in to `atvremote`. If
+you run `atvremote wizard`, he will find all your devices, let you
+pick one and help out with setting it up (guiding you through
+pairing and passwords). Once you have completed the wizard, all
+credentials are saved to storage and you don't have to think about
+that anymore. Pretty neat, huh? This is still an early version,
+so expect bugs and please report them so they can be fixed.
+
+That is is. A pretty good release to be honest. Time for some
+rest!
+
+**Changes:**
+
+*Other:*
+
+```
+d13ede5 docs: Another attempt to fix docs
+7498250 docs: Try to fix API docs for some modules
+856fede storage: Switch to pyfakefs for testing
+7cc5a92 storage: Bump mockfs to 1.1.4
+3376835 storage: Fix tests on Windows
+dfcce1f docs: Add documentation for storage
+cd5ef88 storage: Adjust scripts to use storage
+e370ee1 storage: Initial support for storage
+557681c ci: Enable Dependabot for Dockerfile
+```
+
+**All changes:**
+
+```
+d13ede5 docs: Another attempt to fix docs
+f0978ff build(deps): Bump deepdiff from 6.3.1 to 6.4.1 in /requirements
+bb60615 build(deps): Bump pytest from 7.4.0 to 7.4.1 in /requirements
+11392ae build(deps): Bump mutagen from 1.46.0 to 1.47.0 in /requirements
+4928c42 build(deps): Bump zeroconf from 0.88.0 to 0.97.0 in /requirements
+48a25bb build(deps): Bump pydantic-settings from 2.0.2 to 2.0.3 in /requirements
+7498250 docs: Try to fix API docs for some modules
+856fede storage: Switch to pyfakefs for testing
+7cc5a92 storage: Bump mockfs to 1.1.4
+3376835 storage: Fix tests on Windows
+dfcce1f docs: Add documentation for storage
+cd5ef88 storage: Adjust scripts to use storage
+e370ee1 storage: Initial support for storage
+05ca46d build(deps): Bump zeroconf from 0.86.0 to 0.88.0 in /requirements
+573ac65 build(deps): Bump zeroconf from 0.82.1 to 0.86.0 in /requirements
+dbd0fbf build(deps): Bump chacha20poly1305-reuseable in /requirements
+894c9c4 build(deps): Bump python from 3.11.4-alpine to 3.11.5-alpine
+b892d20 build(deps): Bump protobuf from 4.24.1 to 4.24.2 in /requirements
+e5458f9 build(deps): Bump protobuf from 4.24.0 to 4.24.1 in /requirements
+aed3c2b build(deps): Bump zeroconf from 0.79.0 to 0.82.1 in /requirements
+2a03ff9 build(deps): Bump mypy from 1.5.0 to 1.5.1 in /requirements
+557681c ci: Enable Dependabot for Dockerfile
+a717479 build(deps): Bump python from 3.9.7 to 3.11.4 in Dockerfile
+84d8222 build(deps): Bump zeroconf from 0.76.0 to 0.79.0 in /requirements
+dffb71f build(deps): Bump zeroconf from 0.74.0 to 0.76.0 in /requirements
+e3d7a90 build(deps): Bump types-protobuf in /requirements
+671064e build(deps): Bump types-protobuf in /requirements
+d432705 build(deps): Bump mypy from 1.4.1 to 1.5.0 in /requirements
+6438d9f build(deps): Bump async-timeout from 4.0.2 to 4.0.3 in /requirements (#2136)
+be22c57 build(deps): Bump protobuf from 4.23.4 to 4.24.0 in /requirements (#2131)
+c3c5e33 build(deps): Bump types-protobuf in /requirements (#2130)
+285d4c0 build(deps): Bump zeroconf from 0.72.0 to 0.74.0 in /requirements (#2123)
+```
+
+## 0.13.4 Krusty (2023-08-06)
+
+@bdraco cleaned up in aisle four and made scanning more
+robust in shaky networks, thanks!
+
+**Changes:**
+
+*Other:*
+
+```
+17d130a Fallback to sending unicast PTR queries when multicast is broken or packets are being dropped (#2122)
+b64bdf9 gha: Remove log workflow (#2120)
+```
+
+**All changes:**
+
+```
+17d130a Fallback to sending unicast PTR queries when multicast is broken or packets are being dropped (#2122)
+b64bdf9 gha: Remove log workflow (#2120)
+```
+
 ## 0.13.3 Joe (2023-08-03)
 
 Time for a somewhat minor fix release:

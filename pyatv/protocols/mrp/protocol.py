@@ -17,6 +17,8 @@ from pyatv.interface import BaseService
 from pyatv.protocols.mrp import messages, protobuf
 from pyatv.protocols.mrp.auth import MrpPairVerifyProcedure
 from pyatv.protocols.mrp.connection import AbstractMrpConnection
+from pyatv.settings import InfoSettings
+from pyatv.support import error_handler
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -106,6 +108,7 @@ class MrpProtocol(MessageDispatcher[int, protobuf.ProtocolMessage]):
         connection: AbstractMrpConnection,
         srp: SRPAuthHandler,
         service: BaseService,
+        info: InfoSettings,
     ) -> None:
         """Initialize a new MrpProtocol."""
         super().__init__()
@@ -113,6 +116,7 @@ class MrpProtocol(MessageDispatcher[int, protobuf.ProtocolMessage]):
         self.connection.listener = self
         self.srp = srp
         self.service = service
+        self.info = info
         self.device_info: Optional[protobuf.ProtocolMessage] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._outstanding: Dict[str, OutstandingMessage] = {}
@@ -140,19 +144,19 @@ class MrpProtocol(MessageDispatcher[int, protobuf.ProtocolMessage]):
             # The first message must always be DEVICE_INFORMATION, otherwise the
             # device will not respond with anything
             self.device_info = await self.send_and_receive(
-                messages.device_information("pyatv", self.srp.pairing_id.decode())
+                messages.device_information(self.info, self.srp.pairing_id.decode())
             )
 
             # Distribute the device information to all listeners (as the
             # send_and_receive will stop that propagation).
             self.dispatch(protobuf.DEVICE_INFO_MESSAGE, self.device_info)
 
-            # This is a hack to support re-use of a protocol object in
+            # This is a hack to support reuse of a protocol object in
             # proxy (will be removed/refactored later)
             if skip_initial_messages:
                 return
 
-            await self._enable_encryption()
+            await error_handler(self._enable_encryption, exceptions.AuthenticationError)
 
             # This should be the first message sent after encryption has
             # been enabled
@@ -212,14 +216,11 @@ class MrpProtocol(MessageDispatcher[int, protobuf.ProtocolMessage]):
         credentials = parse_credentials(self.service.credentials)
         pair_verifier = MrpPairVerifyProcedure(self, self.srp, credentials)
 
-        try:
-            await pair_verifier.verify_credentials()
-            output_key, input_key = pair_verifier.encryption_keys(
-                SRP_SALT, SRP_OUTPUT_INFO, SRP_INPUT_INFO
-            )
-            self.connection.enable_encryption(output_key, input_key)
-        except Exception as ex:
-            raise exceptions.AuthenticationError(str(ex)) from ex
+        await pair_verifier.verify_credentials()
+        output_key, input_key = pair_verifier.encryption_keys(
+            SRP_SALT, SRP_OUTPUT_INFO, SRP_INPUT_INFO
+        )
+        self.connection.enable_encryption(output_key, input_key)
 
     async def send(self, message: protobuf.ProtocolMessage) -> None:
         """Send a message and expect no response."""

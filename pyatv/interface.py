@@ -21,6 +21,7 @@ from typing import (
     MutableMapping,
     NamedTuple,
     Optional,
+    Sequence,
     Set,
     Tuple,
     TypeVar,
@@ -37,6 +38,7 @@ from pyatv.const import (
     PairingRequirement,
     Protocol,
 )
+from pyatv.settings import Settings
 from pyatv.support import prettydataclass
 from pyatv.support.device_info import lookup_version
 from pyatv.support.http import ClientSessionManager
@@ -206,6 +208,23 @@ class BaseService(ABC):
         self.password = other.password or self.password
         self._properties.update(other.properties)
 
+    def settings(self) -> Mapping[str, Any]:
+        """Return settings and their values."""
+        return {
+            "credentials": self.credentials,
+            "password": self.password,
+        }
+
+    def apply(self, settings: Mapping[str, Any]) -> None:
+        """Apply settings to service.
+
+        Expects the same format as returned by settings() method. Unknown properties
+        are silently ignored. Settings with a None value are also ignore (keeps
+        original value).
+        """
+        self.credentials = settings.get("credentials") or self.credentials
+        self.password = settings.get("password") or self.password
+
     def __str__(self) -> str:
         """Return a string representation of this object."""
         return (
@@ -226,7 +245,9 @@ class PairingHandler(ABC):
     """Base class for API used to pair with an Apple TV."""
 
     def __init__(
-        self, session_manager: ClientSessionManager, service: BaseService
+        self,
+        session_manager: ClientSessionManager,
+        service: BaseService,
     ) -> None:
         """Initialize a new instance of PairingHandler."""
         self.session_manager = session_manager
@@ -244,13 +265,11 @@ class PairingHandler(ABC):
     @abstractmethod
     def pin(self, pin) -> None:
         """Pin code used for pairing."""
-        raise exceptions.NotSupportedError()
 
     @property
     @abstractmethod
     def device_provides_pin(self) -> bool:
         """Return True if remote device presents PIN code, else False."""
-        raise exceptions.NotSupportedError()
 
     @property
     @abstractmethod
@@ -259,17 +278,14 @@ class PairingHandler(ABC):
 
         The value will be reset when stop() is called.
         """
-        raise exceptions.NotSupportedError()
 
     @abstractmethod
     async def begin(self) -> None:
         """Start pairing process."""
-        raise exceptions.NotSupportedError()
 
     @abstractmethod
     async def finish(self) -> None:
         """Stop pairing process."""
-        raise exceptions.NotSupportedError()
 
 
 class RemoteControl:
@@ -494,7 +510,7 @@ class Playing(ABC):
         self._content_identifier = content_identifier
         self._post_process()
 
-    def _post_process(self):
+    def _post_process(self) -> None:
         if self._position:
             # Make sure position never is negative
             self._position = max(self._position, 0)
@@ -553,7 +569,7 @@ class Playing(ABC):
 
         return "\n".join(output)
 
-    def __eq__(self, other):
+    def __eq__(self, other) -> bool:
         """Compare if two objects are equal."""
         if isinstance(other, Playing):
             for prop in self._PROPERTIES:
@@ -879,7 +895,7 @@ class PowerListener(ABC):  # pylint: disable=too-few-public-methods
     @abstractmethod
     def powerstate_update(
         self, old_state: const.PowerState, new_state: const.PowerState
-    ):
+    ) -> None:
         """Device power state was updated."""
         raise NotImplementedError()
 
@@ -1056,7 +1072,7 @@ class Features:
         self,
         states: Union[List[FeatureState], FeatureState],
         *feature_names: FeatureName
-    ):
+    ) -> bool:
         """Return if features are in a specific state.
 
         This method will return True if all given features are in the state specified
@@ -1104,14 +1120,14 @@ class AudioListener(ABC):
     """Listener interface for audio updates."""
 
     @abstractmethod
-    def volume_update(self, old_level: float, new_level: float):
+    def volume_update(self, old_level: float, new_level: float) -> None:
         """Device volume was updated."""
         raise NotImplementedError()
 
     @abstractmethod
     def outputdevices_update(
         self, old_devices: List[OutputDevice], new_devices: List[OutputDevice]
-    ):
+    ) -> None:
         """Output devices were updated."""
         raise NotImplementedError()
 
@@ -1194,7 +1210,7 @@ class KeyboardListener(ABC):  # pylint: disable=too-few-public-methods
     @abstractmethod
     def focusstate_update(
         self, old_state: const.KeyboardFocusState, new_state: const.KeyboardFocusState
-    ):
+    ) -> None:
         """Keyboard focus state was updated."""
         raise exceptions.NotSupportedError()
 
@@ -1341,6 +1357,20 @@ class BaseConfig(ABC):
             return True
         return False
 
+    def apply(self, settings: Settings) -> None:
+        """Apply settings to configuration."""
+        for service in self.services:
+            if service.protocol == Protocol.AirPlay:
+                service.apply(dict(settings.protocols.airplay))
+            elif service.protocol == Protocol.Companion:
+                service.apply(dict(settings.protocols.companion))
+            elif service.protocol == Protocol.DMAP:
+                service.apply(dict(settings.protocols.dmap))
+            elif service.protocol == Protocol.MRP:
+                service.apply(dict(settings.protocols.mrp))
+            elif service.protocol == Protocol.RAOP:
+                service.apply(dict(settings.protocols.raop))
+
     def __eq__(self, other) -> bool:
         """Compare instance with another instance."""
         if isinstance(other, self.__class__):
@@ -1369,6 +1399,50 @@ class BaseConfig(ABC):
         """Return deep-copy of instance."""
 
 
+class Storage(ABC):
+    """Base class for storage modules."""
+
+    @property
+    @abstractmethod
+    def settings(self) -> Sequence[Settings]:
+        """Return settings for all devices."""
+
+    @abstractmethod
+    async def save(self) -> None:
+        """Save settings to active storage."""
+
+    @abstractmethod
+    async def load(self) -> None:
+        """Load settings from active storage."""
+
+    @abstractmethod
+    async def get_settings(self, config: BaseConfig) -> Settings:
+        """Return settings for a specific configuration (device).
+
+        The returned Settings object is a reference to an object in the storage module.
+        Changes made can/will be written back to the storage in case "save" is called.
+
+        If no settings exists for the current configuration, new settings are created
+        automatically and returned. If the configuration does not contain any valid
+        identitiers, DeviceIdMissingError will be raised.
+        """
+
+    @abstractmethod
+    async def remove_settings(self, settings: Settings) -> bool:
+        """Remove settings from storage.
+
+        Returns True if settings were removed, otherwise False.
+        """
+
+    @abstractmethod
+    async def update_settings(self, config: BaseConfig) -> None:
+        """Update settings based on config.
+
+        This method extracts settings from a configuration and writes them back to
+        the storage.
+        """
+
+
 class AppleTV(ABC, StateProducer[DeviceListener]):
     """Base class representing an Apple TV.
 
@@ -1385,6 +1459,11 @@ class AppleTV(ABC, StateProducer[DeviceListener]):
     @abstractmethod
     def close(self) -> Set[asyncio.Task]:
         """Close connection and release allocated resources."""
+
+    @property
+    @abstractmethod
+    def settings(self) -> Settings:
+        """Return device settings used by pyatv."""
 
     @property
     @abstractmethod

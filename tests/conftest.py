@@ -1,3 +1,4 @@
+import builtins
 import logging
 from os import path
 from types import SimpleNamespace
@@ -130,7 +131,7 @@ async def multicast_scan_fixture(event_loop, udns_server):
 
 @pytest_asyncio.fixture(name="unicast_scan")
 async def unicast_scan_fixture(event_loop, udns_server):
-    async def _scan(timeout=1, identifier=None, protocol=None):
+    async def _scan(timeout=1, identifier=None, protocol=None, storage=None):
         port = str(udns_server.port)
         with patch.dict("os.environ", {"PYATV_UDNS_PORT": port}):
             return await pyatv.scan(
@@ -139,6 +140,7 @@ async def unicast_scan_fixture(event_loop, udns_server):
                 timeout=timeout,
                 identifier=identifier,
                 protocol=protocol,
+                storage=storage,
             )
 
     yield _scan
@@ -185,3 +187,8 @@ def data_webserver_fixture(httpserver: HTTPServer, files: typing.Sequence[str]):
         with open(path.join(root_dir, file), "rb") as _fh:
             httpserver.expect_request("/" + file).respond_with_data(_fh.read())
     yield httpserver.url_for("/")
+
+
+@pytest.fixture(name="mockfs")
+def mockfs_fixture(fs):
+    yield fs

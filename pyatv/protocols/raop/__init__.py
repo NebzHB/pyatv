@@ -32,7 +32,6 @@ from pyatv.core.scan import (
 from pyatv.helpers import get_unique_id
 from pyatv.interface import (
     Audio,
-    BaseConfig,
     BaseService,
     DeviceInfo,
     FeatureInfo,
@@ -45,10 +44,7 @@ from pyatv.interface import (
     Stream,
 )
 from pyatv.protocols.airplay.auth import extract_credentials
-from pyatv.protocols.airplay.pairing import (
-    AirPlayPairingHandler,
-    get_preferred_auth_type,
-)
+from pyatv.protocols.airplay.pairing import AirPlayPairingHandler
 from pyatv.protocols.airplay.utils import (
     AirPlayMajorVersion,
     dbfs_to_pct,
@@ -61,7 +57,7 @@ from pyatv.protocols.raop.protocols import StreamContext, airplayv1, airplayv2
 from pyatv.protocols.raop.stream_client import PlaybackInfo, RaopListener, StreamClient
 from pyatv.support.collections import dict_merge
 from pyatv.support.device_info import lookup_model, lookup_os
-from pyatv.support.http import ClientSessionManager, HttpConnection, http_connect
+from pyatv.support.http import HttpConnection, http_connect
 from pyatv.support.metadata import EMPTY_METADATA, MediaMetadata, merge_into
 from pyatv.support.rtsp import RtspSession
 
@@ -111,12 +107,11 @@ class RaopPushUpdater(AbstractPushUpdater):
 class RaopPlaybackManager:
     """Manage current play state for RAOP."""
 
-    def __init__(self, address: str, port: int) -> None:
+    def __init__(self, core: Core) -> None:
         """Initialize a new RaopPlaybackManager instance."""
+        self.core = core
         self.playback_info: Optional[PlaybackInfo] = None
         self._is_acquired: bool = False
-        self._address: str = address
-        self._port: int = port
         self._context: StreamContext = StreamContext()
         self._connection: Optional[HttpConnection] = None
         self._rtsp: Optional[RtspSession] = None
@@ -144,10 +139,14 @@ class RaopPlaybackManager:
         if self._stream_client and self._rtsp and self._context:
             return self._stream_client, self._context
 
-        self._connection = await http_connect(self._address, self._port)
+        self._connection = await http_connect(
+            str(self.core.config.address), self.core.service.port
+        )
         self._rtsp = RtspSession(self._connection)
 
-        protocol_version = get_protocol_version(service)
+        protocol_version = get_protocol_version(
+            service, self.core.settings.protocols.raop.protocol_version
+        )
         _LOGGER.debug("Using AirPlay version %s", protocol_version)
 
         protocol_class = (
@@ -157,7 +156,10 @@ class RaopPlaybackManager:
         )
 
         self._stream_client = StreamClient(
-            self._rtsp, self._context, protocol_class(self._context, self._rtsp)
+            self._rtsp,
+            self._context,
+            protocol_class(self._context, self._rtsp),
+            self.core.settings,
         )
         return self._stream_client, self._context
 
@@ -512,7 +514,7 @@ def setup(  # pylint: disable=too-many-locals
     core: Core,
 ) -> Generator[SetupData, None, None]:
     """Set up a new RAOP service."""
-    playback_manager = RaopPlaybackManager(str(core.config.address), core.service.port)
+    playback_manager = RaopPlaybackManager(core)
     metadata = RaopMetadata(playback_manager)
     push_updater = RaopPushUpdater(metadata, core.state_dispatcher)
 
@@ -587,14 +589,12 @@ def setup(  # pylint: disable=too-many-locals
     )
 
 
-def pair(
-    config: BaseConfig,
-    service: BaseService,
-    session_manager: ClientSessionManager,
-    loop: asyncio.AbstractEventLoop,
-    **kwargs
-) -> PairingHandler:
+def pair(core: Core, **kwargs) -> PairingHandler:
     """Return pairing handler for protocol."""
     return AirPlayPairingHandler(
-        config, service, session_manager, get_preferred_auth_type(service), **kwargs
+        core,
+        get_protocol_version(
+            core.service, core.settings.protocols.raop.protocol_version
+        ),
+        **kwargs,
     )
