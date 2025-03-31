@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from google.protobuf.text_format import MessageToString
 import requests
 
-# New messages re-using inner message of another type
+# New messages reusing inner message of another type
 REUSED_MESSAGES = {"DEVICE_INFO_MESSAGE": "DEVICE_INFO_UPDATE_MESSAGE"}
 
 BASE_PATH = os.path.join("pyatv", "protocols", "mrp", "protobuf")
@@ -78,7 +78,7 @@ def _protobuf_url(version):
 
 
 def _get_protobuf_version():
-    return "28.1"
+    return "30.2"
 
 
 def _download_protoc(force=False):
